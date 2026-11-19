@@ -71,7 +71,11 @@
       (apk && apk.size ? " · universal APK, " + mb(apk.size) : "") + ".";
     // Desktop buttons go straight to this release's files once it has them.
     const file = (re) => (rel.assets || []).find((a) => re.test(a.name));
-    const desktop = { windows: file(/windows-x64-setup\.exe$/) || file(/\.msi$/), mac: file(/macos-[^.]+\.dmg$/) || file(/\.dmg$/), linux: file(/\.AppImage$/) };
+    const desktop = {
+      windows: file(/windows-x64-setup\.exe$/) || file(/\.msi$/),
+      mac: file(/macos-universal\.dmg$/) || file(/macos-[^.]+\.dmg$/) || file(/\.dmg$/),
+      linux: file(/\.AppImage$/),
+    };
     document.querySelectorAll("[data-desktop]").forEach((link) => {
       const a = desktop[link.dataset.desktop];
       link.href = a ? a.browser_download_url : (rel.html_url || LATEST_PAGE);

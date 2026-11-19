@@ -379,7 +379,8 @@ on your own connection with no hosted proxy.
   the watch, skip, like, see what's up next, and turn the crown for volume.
   It asks for headphones rather than playing from the watch's speaker.
 - **Desktop (early).** A Windows, macOS and Linux app (`desktop/`, run it
-  with `./gradlew :desktop:run`; CI builds an MSI, DMG and DEB). It has
+  with `./gradlew :desktop:run`). macOS release builds use one universal DMG
+  for Intel and Apple silicon Macs running macOS Tahoe. It has
   Home (moods and genres, a speed dial and daily mixes made from what you
   play there, quick picks, then YouTube Music's rows page after page, new
   releases and the charts), a Library with your year so far, shortcuts, your
@@ -406,6 +407,28 @@ on your own connection with no hosted proxy.
   the system's FFmpeg libraries (libavcodec).
 - **Opens YouTube links.** music.youtube.com, youtube.com and youtu.be
   links, or links shared to the app, open in OpenTune.
+
+### Install on macOS
+
+Download `OpenTune-<version>-macos-universal.dmg` from GitHub Releases, open
+it and drag OpenTune into Applications. The app includes its Java runtime
+for both processor types.
+
+The **macOS Tahoe** workflow builds and tests the same DMG on both processor
+types. Its `macos-universal` artifact contains the DMG for a preview build.
+To sign and notarize release builds, configure the following GitHub Actions
+secrets in the repository.
+
+| Secret | Value |
+| --- | --- |
+| `MACOS_CERTIFICATE_BASE64` | Base64-encoded Developer ID Application certificate and private key exported as a PKCS#12 file |
+| `MACOS_CERTIFICATE_PASSWORD` | Password used to export the PKCS#12 file |
+| `MACOS_NOTARY_KEY_BASE64` | Base64-encoded App Store Connect API key (`.p8`) |
+| `MACOS_NOTARY_KEY_ID` | App Store Connect API key ID |
+| `MACOS_NOTARY_ISSUER_ID` | App Store Connect issuer ID |
+
+For a build without notarization, macOS can require **Open Anyway** under
+**System Settings → Privacy & Security** after the first launch attempt.
 
 ### Library and account
 

@@ -1,0 +1,222 @@
+name: macOS Tahoe
+
+on:
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      ref:
+        description: Source commit for the desktop app
+        type: string
+      tag:
+        description: Release tag to use in the DMG filename
+        type: string
+    secrets:
+      LASTFM_API_KEY:
+        required: false
+      LASTFM_API_SECRET:
+        required: false
+      DISCORD_APP_ID:
+        required: false
+      MACOS_CERTIFICATE_BASE64:
+        required: false
+      MACOS_CERTIFICATE_PASSWORD:
+        required: false
+      MACOS_NOTARY_KEY_BASE64:
+        required: false
+      MACOS_NOTARY_KEY_ID:
+        required: false
+      MACOS_NOTARY_ISSUER_ID:
+        required: false
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    name: Build native app (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-26
+            arch: arm64
+            java-architecture: aarch64
+          - os: macos-26-intel
+            arch: x86_64
+            java-architecture: x86_64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: zulu
+          java-version: '21'
+          architecture: ${{ matrix.arch == 'arm64' && 'aarch64' || 'x64' }}
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools platforms;android-37.0 build-tools;36.0.0 ndk;27.2.12479018 cmake;3.22.1
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Build OpenTune
+        env:
+          LASTFM_API_KEY: ${{ secrets.LASTFM_API_KEY }}
+          LASTFM_API_SECRET: ${{ secrets.LASTFM_API_SECRET }}
+          DISCORD_APP_ID: ${{ vars.DISCORD_APP_ID || secrets.DISCORD_APP_ID }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          test "$(uname -m)" = "$ARCH"
+          ./gradlew --no-daemon :desktop:test :desktop:createDistributable
+      - name: Verify and archive the native app
+        env:
+          ARCH: ${{ matrix.arch }}
+          JAVA_ARCH: ${{ matrix.java-architecture }}
+        run: |
+          app=desktop/build/compose/binaries/main/app/OpenTune.app
+          lipo -verify_arch "$ARCH" "$app/Contents/MacOS/OpenTune"
+          lipo -verify_arch "$ARCH" "$app/Contents/runtime/Contents/Home/lib/server/libjvm.dylib"
+          "$app/Contents/MacOS/OpenTune" --self-check | tee "$RUNNER_TEMP/opentune-self-check.log"
+          if grep -q '^OpenTune: ' "$RUNNER_TEMP/opentune-self-check.log"; then
+            grep -E "^OpenTune: Mac OS X 26([.][0-9]+)* \($JAVA_ARCH\)$" "$RUNNER_TEMP/opentune-self-check.log"
+          fi
+          ditto -c -k --sequesterRsrc --keepParent "$app" "$RUNNER_TEMP/OpenTune.app.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-image-${{ matrix.arch }}
+          path: ${{ runner.temp }}/OpenTune.app.zip
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
+  package:
+    name: Package universal DMG
+    needs: build
+    runs-on: macos-26
+    timeout-minutes: 40
+    outputs:
+      notarized: ${{ steps.dmg.outputs.notarized }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: macos-image-*
+          path: ${{ runner.temp }}/macos-images
+      - name: Package and sign
+        id: dmg
+        env:
+          TAG: ${{ inputs.tag }}
+          CERTIFICATE_BASE64: ${{ secrets.MACOS_CERTIFICATE_BASE64 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          NOTARY_KEY_BASE64: ${{ secrets.MACOS_NOTARY_KEY_BASE64 }}
+          NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
+        run: |
+          umask 077
+          signing_dir="$(mktemp -d)"
+          keychain="$signing_dir/opentune.keychain-db"
+          trap 'security delete-keychain "$keychain" >/dev/null 2>&1 || true; rm -rf "$signing_dir"' EXIT
+
+          notarized=false
+          if [[ -n "$CERTIFICATE_BASE64$CERTIFICATE_PASSWORD$NOTARY_KEY_BASE64$NOTARY_KEY_ID$NOTARY_ISSUER_ID" ]]; then
+            if [[ -z "$CERTIFICATE_BASE64" || -z "$CERTIFICATE_PASSWORD" || -z "$NOTARY_KEY_BASE64" || -z "$NOTARY_KEY_ID" || -z "$NOTARY_ISSUER_ID" ]]; then
+              echo '::error::Configure all macOS signing and notarization secrets together.'
+              exit 1
+            fi
+
+            printf '%s' "$CERTIFICATE_BASE64" | base64 -D > "$signing_dir/certificate.p12"
+            printf '%s' "$NOTARY_KEY_BASE64" | base64 -D > "$signing_dir/AuthKey.p8"
+            password="$(openssl rand -hex 32)"
+            security create-keychain -p "$password" "$keychain"
+            security set-keychain-settings -lut 3600 "$keychain"
+            security unlock-keychain -p "$password" "$keychain"
+            security import "$signing_dir/certificate.p12" -k "$keychain" -P "$CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+            security list-keychains -d user -s "$keychain"
+            security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$password" "$keychain" >/dev/null
+            identity="$(security find-identity -v -p codesigning "$keychain" | awk '/"Developer ID Application:/ {print $2}')"
+            if [[ ! "$identity" =~ ^[[:xdigit:]]{40}$ ]]; then
+              echo '::error::The certificate must provide one valid Developer ID Application signing identity.'
+              exit 1
+            fi
+            export OPENTUNE_MACOS_SIGN_IDENTITY="$identity"
+          fi
+
+          images="$RUNNER_TEMP/macos-images"
+          for arch in arm64 x86_64; do
+            ditto -x -k "$images/macos-image-$arch/OpenTune.app.zip" "$images/$arch"
+          done
+          mkdir -p "$RUNNER_TEMP/macos-dmg"
+          dmg="$RUNNER_TEMP/macos-dmg/OpenTune${TAG:+-$TAG}-macos-universal.dmg"
+          desktop/packaging/macos-universal.sh "$images/arm64/OpenTune.app" "$images/x86_64/OpenTune.app" "$dmg"
+
+          if [[ -n "${OPENTUNE_MACOS_SIGN_IDENTITY:-}" ]]; then
+            xcrun notarytool submit "$dmg" --key "$signing_dir/AuthKey.p8" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER_ID" --wait
+            xcrun stapler staple "$dmg"
+            notarized=true
+          else
+            echo '::notice::The universal DMG is ad-hoc signed. Apple Developer ID credentials enable notarization.'
+          fi
+          echo "notarized=$notarized" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-universal
+          path: ${{ runner.temp }}/macos-dmg/*.dmg
+          if-no-files-found: error
+          compression-level: 0
+
+  verify:
+    name: Test universal DMG on Tahoe (${{ matrix.arch }})
+    needs: package
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-26
+            arch: arm64
+            java-architecture: aarch64
+          - os: macos-26-intel
+            arch: x86_64
+            java-architecture: x86_64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: macos-universal
+          path: ${{ runner.temp }}/macos-dmg
+      - name: Verify and launch the DMG app
+        env:
+          ARCH: ${{ matrix.arch }}
+          JAVA_ARCH: ${{ matrix.java-architecture }}
+          NOTARIZED: ${{ needs.package.outputs.notarized }}
+        run: |
+          test "$(uname -m)" = "$ARCH"
+          test "$(sw_vers -productVersion | cut -d. -f1)" = 26
+          set -- "$RUNNER_TEMP/macos-dmg/"*.dmg
+          test "$#" -eq 1
+          dmg="$1"
+          hdiutil verify "$dmg"
+          if [[ "$NOTARIZED" == true ]]; then
+            xcrun stapler validate "$dmg"
+            spctl --assess --type open --context context:primary-signature "$dmg"
+          fi
+
+          mount="$(mktemp -d)"
+          hdiutil attach "$dmg" -readonly -nobrowse -noautoopen -mountpoint "$mount"
+          trap 'hdiutil detach "$mount"' EXIT
+          test "$(readlink "$mount/Applications")" = /Applications
+          app="$mount/OpenTune.app"
+          executable="$app/Contents/MacOS/OpenTune"
+          lipo -verify_arch arm64 x86_64 "$executable"
+          codesign --verify --deep --strict "$app"
+          "$executable" --self-check | tee "$RUNNER_TEMP/opentune-self-check.log"
+          if grep -q '^OpenTune: ' "$RUNNER_TEMP/opentune-self-check.log"; then
+            grep -E "^OpenTune: Mac OS X 26([.][0-9]+)* \($JAVA_ARCH\)$" "$RUNNER_TEMP/opentune-self-check.log"
+          fi

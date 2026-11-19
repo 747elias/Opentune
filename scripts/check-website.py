@@ -18,6 +18,7 @@ summary = {'asOf': iso + 'T12:00:00Z', 'totals': {'installs': 1234, 'plays': 543
 login_html = subprocess.check_output(['node', '--input-type=module', '-e',
     "import {authRoute} from './usage-api/auth.mjs'; console.log(await (await authRoute(new Request('https://usage.test/login'),{})).text());"], text=True, cwd=ROOT.parent)
 backend = urlparse(json.loads((ROOT / 'usage-config.json').read_text())['apiBase']).netloc
+mac_download_url = 'https://github.com/justshivv/Opentune/releases/download/v0.4.0/OpenTune-v0.4.0-macos-universal.dmg'
 mode = 'normal'
 def route(request):
     url = urlparse(request.request.url)
@@ -49,7 +50,15 @@ def route(request):
                                  'daily': [{'day': end, 'active': 12, 'plays': 84}], 'versions': [{'version': '0.4.13-' + 'verylonglabel' * 9, 'installations': 12, 'plays': 84}]}, headers=cors)
     elif url.netloc == 'api.github.com':
         assert 'authorization' not in request.request.headers, 'Owner session must never reach GitHub'
-        request.fulfill(json=[{'tag_name': 'v0.4.' + str(i), 'assets': [{'name': 'app.apk', 'download_count': 10}]} for i in range(12)] if '/releases' in url.path else {})
+        if '/releases' in url.path:
+            releases = [{'tag_name': 'v0.4.' + str(i), 'assets': [{'name': 'app.apk', 'download_count': 10}]} for i in range(12)]
+            releases[0]['assets'].extend([
+                {'name': 'OpenTune-v0.4.0-macos-arm64.dmg', 'browser_download_url': mac_download_url.replace('universal', 'arm64')},
+                {'name': 'OpenTune-v0.4.0-macos-universal.dmg', 'browser_download_url': mac_download_url},
+            ])
+            request.fulfill(json=releases)
+        else:
+            request.fulfill(json={})
     elif url.netloc == 'usage.test' and url.path == '/login':
         request.fulfill(body=login_html, content_type='text/html')
     elif url.netloc in ('opentune.test', 'usage.test'):
@@ -79,6 +88,7 @@ with sync_playwright() as p:
         errors = []
         page.on('pageerror', lambda error: errors.append(str(error)))
         page.goto('http://opentune.test/')
+        expect(page.locator('[data-desktop="mac"]')).to_have_attribute('href', mac_download_url)
         page.wait_for_timeout(300)
         no_overflow(page)
         page.reload()
