@@ -49,6 +49,7 @@ internal class FfmpegEngine(
     private val onError: (String?) -> Unit,
     private val out: PcmOut = SoundCard(),
     startImmediately: Boolean = true,
+    private val headers: Map<String, String> = emptyMap(),
 ) : Engine {
     private val lock = Object()
     @Volatile private var disposed = false
@@ -88,6 +89,10 @@ internal class FfmpegEngine(
             g.setOption("reconnect", "1")
             g.setOption("reconnect_streamed", "1")
             g.setOption("rw_timeout", "15000000")
+            if (headers.isNotEmpty()) {
+                val requestHeaders = headers.filter { (name, value) -> name.matches(Regex("[A-Za-z0-9-]+")) && '\r' !in value && '\n' !in value }
+                g.setOption("headers", requestHeaders.entries.joinToString("") { (name, value) -> "$name: $value\r\n" })
+            }
             g.start()
             rate = g.sampleRate.takeIf { it > 0 } ?: 48_000
             duration = (g.lengthInTime / 1000).coerceAtLeast(0)
@@ -101,6 +106,8 @@ internal class FfmpegEngine(
             if (first != null) seekTo(g, first)
             onReady(duration)
             var at = msToFrame(first ?: 0)
+            val space = com.opentune.playback.dsp.Space3D(rate)
+            val stereo = FloatArray(2)
             var emitting = false
             var bytes = ByteArray(0)
             val low = DoubleArray(2)
@@ -137,12 +144,20 @@ internal class FfmpegEngine(
                     if (bytes.size < count * 2) bytes = ByteArray(count * 2)
                     val volume = softGain
                     val gain = normalization
+                    val orbit = AppSettings.sound.value.space.periodSeconds
                     val alpha = 1 - exp(-2 * PI * bassCut / rate)
                     if (alpha == 0.0) low.fill(0.0)
                     for (i in 0 until count) {
-                        val raw = samples.get(samples.position() + i).toInt()
+                        val channel = i % 2
+                        val raw = if (orbit > 0 && count % 2 == 0) {
+                            if (channel == 0) {
+                                stereo[0] = samples.get(samples.position() + i) / 32768f
+                                stereo[1] = samples.get(samples.position() + i + 1) / 32768f
+                                space.process(stereo, orbit)
+                            }
+                            (stereo[channel] * 32768).roundToInt().coerceIn(-32768, 32767)
+                        } else samples.get(samples.position() + i).toInt()
                         val s = if (alpha == 0.0 && gain == 1.0 && volume == 1.0) raw else {
-                            val channel = i % 2
                             low[channel] += alpha * (raw - low[channel])
                             val scaled = (raw - low[channel]) * gain / 32768.0
                             // Keep boosts linear below the limiter's knee, with room for transients.
@@ -186,7 +201,7 @@ internal class FfmpegEngine(
      */
     private fun effects(rate: Int): FFmpegFrameFilter? {
         val requested = (AppSettings.sound.value.speed * rateFactor).coerceIn(0.5f, 2f)
-        val chain = filterChain(requested, AppSettings.equalizer.value)
+        val chain = filterChain(requested, AppSettings.equalizer.value, rate, AppSettings.sound.value, AppSettings.playback.value)
         speed = requested.toDouble()
         if (chain == null) return null
         return FFmpegFrameFilter(chain, 2).apply {
@@ -292,8 +307,26 @@ internal class FfmpegEngine(
          * bands below 120 Hz and above 8 kHz, balance as a pan, and tempo
          * without a change of pitch. Null when none of it would change a thing.
          */
-        fun filterChain(speed: Float, eq: com.opentune.data.settings.EqualizerSettings): String? {
+        fun filterChain(
+            speed: Float,
+            eq: com.opentune.data.settings.EqualizerSettings,
+            rate: Int = 48_000,
+            sound: com.opentune.data.settings.SoundSettings = com.opentune.data.settings.SoundSettings(),
+            playback: com.opentune.data.settings.PlaybackSettings = com.opentune.data.settings.PlaybackSettings(),
+        ): String? {
             val parts = mutableListOf<String>()
+            fun number(value: Number) = "%.3f".format(java.util.Locale.ROOT, value.toDouble())
+            eq.headphone?.let { profile ->
+                parts += "volume=${number(profile.preampDb.coerceIn(-30f, 12f))}dB"
+                profile.filters.filter { it.freqHz >= 10f && it.freqHz < rate / 2f && it.q in 0.05f..100f }.forEach { band ->
+                    val filter = when (band.type) {
+                        com.opentune.data.settings.FilterType.PEAK -> "equalizer"
+                        com.opentune.data.settings.FilterType.LOW_SHELF -> "lowshelf"
+                        com.opentune.data.settings.FilterType.HIGH_SHELF -> "highshelf"
+                    }
+                    parts += "$filter=f=${number(band.freqHz)}:t=q:w=${number(band.q)}:g=${number(band.gainDb.coerceIn(-24f, 24f))}"
+                }
+            }
             if (eq.enabled) {
                 val gains = com.opentune.data.settings.EQ_BANDS_HZ.mapIndexed { i, hz ->
                     (eq.bands.getOrNull(i) ?: 0f) + eq.preampDb +
@@ -311,8 +344,22 @@ internal class FfmpegEngine(
                     parts += "pan=stereo|c0=${"%.3f".format(java.util.Locale.ROOT, left)}*c0|c1=${"%.3f".format(java.util.Locale.ROOT, right)}*c1"
                 }
             }
-            val tempo = speed.coerceIn(0.5f, 2f)
-            if (kotlin.math.abs(tempo - 1f) >= 0.01f) parts += "atempo=${"%.3f".format(java.util.Locale.ROOT, tempo)}"
+            if (playback.clarity) parts += listOf("volume=-2dB", "highpass=f=28", "equalizer=f=270:t=q:w=0.9:g=-1.8", "highshelf=f=6200:g=1.7")
+            if (playback.spatialAudio) parts += "stereotools=mlev=0.90:slev=1.20"
+            if (sound.bassBoost > 0) parts += "bass=f=105:g=${number(sound.bassBoost.coerceIn(0, 1000) * 0.006f)}"
+            if (sound.eightD.periodSeconds > 0 && sound.space.periodSeconds == 0f) {
+                parts += "apulsator=mode=sine:amount=0.8:offset_l=0:offset_r=0.5:timing=hz:hz=${number(1f / sound.eightD.periodSeconds)}"
+            }
+            if (sound.reverb.preset > 0) {
+                val delay = 24 + sound.reverb.preset * 12
+                parts += "aecho=0.85:0.90:$delay|${delay + 31}:0.22|0.12"
+            }
+            val pitch = sound.pitch.coerceIn(0.5f, 2f)
+            if (kotlin.math.abs(pitch - 1f) >= 0.01f) parts += listOf("asetrate=${(rate * pitch).roundToInt()}", "aresample=$rate")
+            var tempo = speed.coerceIn(0.5f, 2f) / pitch
+            if (tempo < 0.5f) { parts += "atempo=0.5"; tempo *= 2 }
+            if (tempo > 2f) { parts += "atempo=2"; tempo /= 2 }
+            if (kotlin.math.abs(tempo - 1f) >= 0.01f) parts += "atempo=${number(tempo)}"
             return parts.takeIf { it.isNotEmpty() }?.joinToString(",")
         }
     }

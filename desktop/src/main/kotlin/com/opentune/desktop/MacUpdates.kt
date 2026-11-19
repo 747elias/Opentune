@@ -3,7 +3,7 @@ package com.opentune.desktop
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.Text
+import com.opentune.ui.theme.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue

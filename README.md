@@ -400,11 +400,13 @@ on your own connection with no hosted proxy.
   play YouTube's Opus stream (about 160 kbps) through a bundled FFmpeg,
   falling back to AAC; YouTube's player code runs on GraalJS; and the
   library (liked songs, playlists and the full play history) is kept in
-  SQLite. It uses the phone app's code for YouTube Music, lyrics, Subsonic
-  and settings as-is, but finds streams with NewPipe only, so some songs
-  don't play yet. Signing in to YouTube Music isn't there. On Linux, songs
-  from your own server and JioSaavn still play through JavaFX, which needs
-  the system's FFmpeg libraries (libavcodec).
+  SQLite. Desktop also has offline downloads, local audio import, playlist
+  import from links and CSV, smart playlists, podcast subscriptions and
+  resume points, internet radio, listening rooms, microphone recognition,
+  SponsorBlock, and JSON backups. Crossfade and Automix use two playback
+  decks. The player can send audio to Chromecast and DLNA receivers, and
+  supports AutoEq headphone profiles, stereo widening and remixes. On
+  macOS the player appears in the system's Now Playing controls.
 - **Opens YouTube links.** music.youtube.com, youtube.com and youtu.be
   links, or links shared to the app, open in OpenTune.
 
@@ -413,6 +415,12 @@ on your own connection with no hosted proxy.
 Download `OpenTune-<version>-macos-universal.dmg` from GitHub Releases, open
 it and drag OpenTune into Applications. The app includes its Java runtime
 for both processor types.
+
+To connect YouTube Music, open **Settings → Accounts → YouTube Music** on
+the Mac. Sign in to OpenTune on Android, then open **Settings → Link a
+device** on the phone and scan the Mac's QR code. Keep the devices on the
+same network. On the Mac, **Library → YouTube Music** shows the account's
+playlists and likes. Login credentials stay on the paired devices.
 
 The **macOS Tahoe** workflow builds and tests the same DMG on both processor
 types. Its `macos-universal` artifact contains the DMG for a preview build.

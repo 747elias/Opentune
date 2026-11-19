@@ -59,7 +59,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
+import com.opentune.ui.theme.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
@@ -414,6 +414,7 @@ private fun PlayerFoot(song: Song, showLyrics: Boolean, onLyrics: (() -> Unit)?)
             Spacer(Modifier.width(10.dp))
             HeartButton(isLiked) { DesktopAccount.setLiked(song, !isLiked) }
             Spacer(Modifier.width(10.dp))
+            CastButton()
             MoreButton(song)
         }
         SeekBar(progress, Modifier.padding(top = 14.dp))

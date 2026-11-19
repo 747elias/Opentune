@@ -28,6 +28,7 @@ fun main(args: Array<String>) {
     if (uiCheck) System.setProperty("user.home", java.nio.file.Files.createTempDirectory("opentune-ui-check-").toString())
     // The shared settings and music server, as the phone starts them.
     AppSettings.init(appContext)
+    DesktopLanguage.init()
     Subsonic.init(appContext)
     com.opentune.data.config.RemoteConfig.init(appContext)
     DesktopAccount.init(appContext)

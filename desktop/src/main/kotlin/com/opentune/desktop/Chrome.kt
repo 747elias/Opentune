@@ -56,7 +56,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
+import com.opentune.ui.theme.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -272,7 +272,7 @@ internal fun TopBar(
 ) {
     val playing by Player.playing.collectAsState()
     val loading by Player.loading.collectAsState()
-    val shuffled by Player.shuffled.collectAsState()
+    val shuffle by Player.shuffle.collectAsState()
     val repeat by Player.repeat.collectAsState()
     val has = song != null
     val frost = MaterialTheme.colorScheme.background.copy(alpha = 0.7f)
@@ -298,7 +298,11 @@ internal fun TopBar(
         Row(Modifier.fillMaxSize().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
             HoverIcon(Icons.AutoMirrored.Rounded.ArrowBack, "Back", enabled = canGoBack, size = 34.dp, iconSize = 20.dp, onClick = onBack)
             Spacer(Modifier.width(8.dp))
-            if (full) HoverIcon(Icons.Rounded.Shuffle, if (shuffled) "Shuffle on" else "Shuffle", enabled = has, lit = shuffled, size = 32.dp, iconSize = 18.dp, onClick = Player::toggleShuffle)
+            if (full) HoverIcon(Icons.Rounded.Shuffle, when (shuffle) {
+                Player.Shuffle.OFF -> "Shuffle"
+                Player.Shuffle.ON -> "Shuffle on"
+                Player.Shuffle.SMART -> "Smart shuffle"
+            }, enabled = has, lit = shuffle != Player.Shuffle.OFF, size = 32.dp, iconSize = 18.dp, onClick = Player::toggleShuffle)
             HoverIcon(Icons.Rounded.SkipPrevious, "Previous", enabled = has, size = 34.dp, iconSize = 22.dp, onClick = Player::previous)
             Box(
                 Modifier.padding(horizontal = 4.dp).size(36.dp).clip(CircleShape)

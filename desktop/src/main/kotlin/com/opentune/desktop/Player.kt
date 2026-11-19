@@ -84,8 +84,9 @@ object Player {
 
     private val _repeat = MutableStateFlow(Repeat.OFF)
     val repeat: StateFlow<Repeat> = _repeat.asStateFlow()
-    private val _shuffled = MutableStateFlow(false)
-    val shuffled: StateFlow<Boolean> = _shuffled.asStateFlow()
+    enum class Shuffle { OFF, ON, SMART }
+    private val _shuffle = MutableStateFlow(Shuffle.OFF)
+    val shuffle = _shuffle.asStateFlow()
     /** The queue's order before shuffling, to go back to. */
     private var unshuffled: List<Song>? = null
 
@@ -93,20 +94,42 @@ object Player {
 
     /** Shuffles what's after the song playing, or puts the queue back in its order. */
     fun toggleShuffle() = synchronized(gate) {
+        if (DesktopRooms.isGuest) return@synchronized
         val q = _queue.value
         val now = current
         val original = unshuffled
-        if (_shuffled.value && original != null) {
-            _queue.value = original
-            _index.value = now?.let { s -> original.indexOfFirst { it.videoId == s.videoId } }?.takeIf { it >= 0 } ?: 0
+        if (_shuffle.value == Shuffle.ON && AppSettings.playback.value.smartShuffle && q.size > 4 && q.any { musicTrack(it) }) {
+            _shuffle.value = Shuffle.SMART
+            val at = _index.value
+            val seed = q.getOrNull(at)?.takeIf(::musicTrack) ?: q.first(::musicTrack)
+            scope.launch {
+                val found = runCatching { InnertubeParser.parseWatchQueue(Innertube.next(seed.videoId)) }.getOrDefault(emptyList())
+                synchronized(gate) {
+                    if (_shuffle.value != Shuffle.SMART || _queue.value !== q || _index.value != at) return@synchronized
+                    val have = q.mapTo(HashSet()) { it.videoId }
+                    val picks = found.filter { musicTrack(it) && Pages.allowed(it) && have.add(it.videoId) }.iterator()
+                    _queue.value = q.take(at + 1) + buildList {
+                        q.drop(at + 1).forEachIndexed { i, song ->
+                            add(song)
+                            if ((i + 1) % 4 == 0 && picks.hasNext()) add(picks.next().copy(smartShuffle = true))
+                        }
+                    }
+                }
+            }
+        } else if (_shuffle.value != Shuffle.OFF && original != null) {
+            val originalIds = original.mapTo(HashSet()) { it.videoId }
+            val currentIds = q.mapTo(HashSet()) { it.videoId }
+            val restored = original.filter { it.videoId in currentIds } + q.filter { it.videoId !in originalIds && (!it.smartShuffle || it == now) }
+            _queue.value = restored
+            _index.value = now?.let { s -> restored.indexOfFirst { it.videoId == s.videoId } }?.takeIf { it >= 0 } ?: 0
             unshuffled = null
-            _shuffled.value = false
+            _shuffle.value = Shuffle.OFF
         } else if (q.isNotEmpty()) {
             unshuffled = q
             val at = _index.value.coerceIn(q.indices)
             _queue.value = listOf(q[at]) + q.filterIndexed { i, _ -> i != at }.shuffled()
             _index.value = 0
-            _shuffled.value = true
+            _shuffle.value = Shuffle.ON
         }
         Unit
     }
@@ -117,7 +140,7 @@ object Player {
     /** 1 normally; less while the sleep timer winds down. */
     @Volatile private var fade = 1.0
 
-    private enum class Decoder { FFMPEG, JAVA_FX, FLAC }
+    private enum class Decoder { FFMPEG, JAVA_FX, FLAC, CAST }
 
     private class Source(
         val address: String,
@@ -126,6 +149,8 @@ object Player {
         val loudness: () -> Double? = { null },
         val readFlac: (() -> java.io.InputStream)? = null,
         val fallback: (() -> Source?)? = null,
+        val cast: DesktopCast.Connection? = null,
+        val headers: Map<String, String> = emptyMap(),
     )
 
     private class Deck(val song: Song, val source: Source) {
@@ -180,6 +205,10 @@ object Player {
                         }
                         applyNormalization(d)
                     }
+                    val current = main
+                    if (current?.source?.decoder == Decoder.FLAC && filteredOutput() && Ffmpeg.available && blend == null) {
+                        open(_index.value, current.engine.positionMs(), wanted, recordPlay = false)
+                    }
                 }
             }
         }
@@ -219,7 +248,7 @@ object Player {
 
     private fun setQueue(songs: List<Song>) {
         unshuffled = null
-        _shuffled.value = false
+        _shuffle.value = Shuffle.OFF
         _queue.value = songs
     }
 
@@ -417,13 +446,14 @@ object Player {
         DesktopListeningProgress.save(d.song.videoId, d.engine.positionMs(), d.engine.durationMs())
     }
 
-    private fun open(i: Int, position: Long? = null) {
+    private fun open(i: Int, position: Long? = null, play: Boolean = true, recordPlay: Boolean = true) {
         val song = _queue.value.getOrNull(i) ?: return
         saveProgress()
         resetMix()
         main?.engine?.dispose()
         main = null
-        startSong(i, song)
+        startSong(i, song, recordPlay)
+        wanted = play
         val source = firstSource(song)
         if (source == null) {
             fail(song)
@@ -436,7 +466,11 @@ object Player {
         startBackgroundWork(song)
     }
 
-    private fun startSong(i: Int, song: Song) {
+    internal fun outputChanged() = synchronized(gate) {
+        if (current != null && (main != null || wanted)) open(_index.value, positionMs(), wanted, recordPlay = false)
+    }
+
+    private fun startSong(i: Int, song: Song, recordPlay: Boolean = true) {
         upgradeJob?.cancel()
         aheadJob?.cancel()
         incoming?.engine?.dispose()
@@ -452,7 +486,7 @@ object Player {
         wanted = true
         _playing.value = false
         playedInSession += song.videoId
-        if (!AppSettings.playback.value.pauseListeningHistory) Library.played(song)
+        if (recordPlay && !AppSettings.playback.value.pauseListeningHistory) Library.played(song)
     }
 
     private fun playDeck(d: Deck) {
@@ -463,6 +497,9 @@ object Player {
     }
 
     private fun firstSource(song: Song): Source? {
+        DesktopCast.active.value?.let { connection ->
+            return Source("", Decoder.CAST, { Quality(connection.target.name, connection.target.kind.name) }, cast = connection)
+        }
         val local = OfflineDownloads.audio(song.videoId)
         if (local != null && (song.localUri != null || !AppSettings.playback.value.streamDownloadsOnline)) return downloaded(local)
         val upgrade = if (AppSettings.playback.value.qualityUpgrade) knownUpgrade(song) else null
@@ -472,9 +509,14 @@ object Player {
     private fun downloaded(audio: OfflineDownloads.Audio): Source {
         val quality = { Quality("Download", audio.detail, audio.lossless) }
         val loudness = { if (audio.lossless) null else audio.loudnessDb }
-        if (audio.format.equals("FLAC", true)) return Source(audio.file.absolutePath, Decoder.FLAC, quality, readFlac = { audio.file.inputStream() })
+        if (audio.format.equals("FLAC", true) && !filteredOutput()) {
+            return Source(audio.file.absolutePath, Decoder.FLAC, quality, readFlac = { audio.file.inputStream() })
+        }
         return standardSource(audio.file.absolutePath, audio.file.toURI().toASCIIString(), quality, loudness)
     }
+
+    private fun filteredOutput(): Boolean = AppSettings.equalizer.value.let { it.enabled || it.headphone != null } ||
+        !AppSettings.sound.value.isDefault || AppSettings.playback.value.let { it.clarity || it.spatialAudio }
 
     private fun standardSource(
         address: String,
@@ -497,7 +539,7 @@ object Player {
             }
             LocalMusic.isLocal(id) -> DesktopLocalMusic.fileOf(song)?.let { file ->
                 val quality = { DesktopLocalMusic.qualityOf(file) }
-                if (file.extension.equals("flac", true)) Source(file.absolutePath, Decoder.FLAC, quality, readFlac = { file.inputStream() })
+                if (file.extension.equals("flac", true) && !filteredOutput()) Source(file.absolutePath, Decoder.FLAC, quality, readFlac = { file.inputStream() })
                 else standardSource(file.absolutePath, file.toURI().toASCIIString(), quality)
             }
             Subsonic.isSubsonic(id) -> Subsonic.streamUrl(id)?.replace("format=raw", "format=mp3&maxBitRate=320")?.let { address ->
@@ -535,10 +577,11 @@ object Player {
         val failure: (String?) -> Unit = { message -> synchronized(gate) { sourceFailed(d, message) } }
         d.engine = when (source.decoder) {
             Decoder.FFMPEG -> FfmpegEngine(source.address, from, play, ready, started, playing, ended, failure,
-                out = SoundCard(120), startImmediately = false)
+                out = SoundCard(120), startImmediately = false, headers = source.headers)
             Decoder.JAVA_FX -> FxEngine(source.address, from, play, ready, started, playing, ended, failure)
             Decoder.FLAC -> FlacEngine(source.readFlac!!, from, play, started, ended, failure,
                 out = SoundCard(160), onReady = ready, startImmediately = false)
+            Decoder.CAST -> CastEngine(requireNotNull(source.cast), song, from(), play, ready, started, playing, ended, failure)
         }
         return d
     }
@@ -631,6 +674,7 @@ object Player {
     }
 
     private fun startBackgroundWork(song: Song) {
+        if (main?.source?.decoder == Decoder.CAST) return
         val gen = generation
         upgradeJob = scope.launch {
             if (AppSettings.playback.value.qualityUpgrade) findUpgrades(song, gen)
@@ -672,6 +716,7 @@ object Player {
             return
         }
         val d = main ?: return cancelCue()
+        if (d.source.decoder == Decoder.CAST) return cancelCue()
         val settings = AppSettings.playback.value
         val mode = if (settings.automix) -settings.automixPerformance.ordinal - 1 else settings.crossfadeSeconds.coerceIn(0, 12)
         val at = nextIndex(automatic = true)
@@ -828,6 +873,10 @@ object Player {
     private fun upgradeSource(song: Song, upgrade: Upgrade): Source {
         val fallback = { upgrades.remove(song.videoId); baseSource(song) }
         val flac = upgrade.flac
+        if (flac != null && filteredOutput() && Ffmpeg.available) {
+            return Source(flac.url, Decoder.FFMPEG, { Quality(flac.provider, "FLAC · processed PCM", lossless = true) },
+                fallback = fallback, headers = flac.headers)
+        }
         return if (flac != null) Source(flac.url, Decoder.FLAC,
             { Quality(flac.provider, "FLAC ${flac.bits}-bit / ${Addons.khz(flac.rate)}", lossless = true) },
             readFlac = { download(flac.url, flac.headers) }, fallback = fallback)
@@ -978,7 +1027,7 @@ object Player {
                 opening = false
                 val have = _queue.value.mapTo(HashSet()) { it.videoId }
                 if (AppSettings.playback.value.noRepeatInSession) have.addAll(playedInSession)
-                val fresh = more.filter { have.add(it.videoId) }
+                val fresh = more.filter { Pages.allowed(it) && have.add(it.videoId) }
                 if (fresh.isEmpty() || !wanted) {
                     _loading.value = false
                     setPlayState(false)

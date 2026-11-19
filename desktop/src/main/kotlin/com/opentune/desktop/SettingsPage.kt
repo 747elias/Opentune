@@ -39,7 +39,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
-import androidx.compose.material3.Text
+import com.opentune.ui.theme.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -265,8 +265,23 @@ internal fun SleepChips(sleep: Player.Sleep?) {
 private fun EqualizerSection() {
     val eq by AppSettings.equalizer.collectAsState()
     val playback by AppSettings.playback.collectAsState()
+    val sound by AppSettings.sound.collectAsState()
     Section("Equalizer") {
         HeadphoneSettings()
+        if (Ffmpeg.available) {
+            Choices("Remix", com.opentune.data.settings.RemixPreset.entries, com.opentune.data.settings.RemixPreset.matching(sound),
+                { it?.label ?: "Custom" }) { preset -> preset?.let { chosen -> AppSettings.updateSound { chosen.sound } } }
+            LabelledSlider("Pitch", sound.pitch, 0.5f..2f, "%.2f×") { pitch -> AppSettings.updateSound { it.copy(pitch = pitch) } }
+            Choices("Reverb", com.opentune.data.settings.ReverbLevel.entries, sound.reverb, { it.label }) { reverb ->
+                AppSettings.updateSound { it.copy(reverb = reverb) }
+            }
+            Choices("8D audio", com.opentune.data.settings.EightD.entries, sound.eightD, { it.label }) { mode ->
+                AppSettings.updateSound { it.copy(eightD = mode, space = com.opentune.data.settings.Space3DSpeed.OFF) }
+            }
+            Choices("3D sound", com.opentune.data.settings.Space3DSpeed.entries, sound.space, { it.label }) { mode ->
+                AppSettings.updateSound { it.copy(space = mode, eightD = com.opentune.data.settings.EightD.OFF) }
+            }
+        }
         SwitchRow("Clarity", "Reduce rumble and bring out voices.", playback.clarity) { enabled ->
             AppSettings.updatePlayback { it.copy(clarity = enabled) }
         }
@@ -412,6 +427,7 @@ private fun AppearanceSection() {
     val theme by AppSettings.theme.collectAsState()
     val ui by AppSettings.ui.collectAsState()
     Section("Look") {
+        DesktopLanguageSettings()
         Choices("Theme", com.opentune.data.settings.ThemeMode.entries, theme.mode, { it.label }) { v -> AppSettings.updateTheme { it.copy(mode = v) } }
         Text("Accent", style = MaterialTheme.typography.bodyLarge)
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {

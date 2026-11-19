@@ -1,5 +1,6 @@
 #import <Foundation/Foundation.h>
 #import <MediaPlayer/MediaPlayer.h>
+#include <dispatch/dispatch.h>
 
 typedef void (*OpenTuneCommand)(int, double);
 

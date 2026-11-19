@@ -49,6 +49,7 @@ val sharedFromCore = listOf(
     "com/opentune/data/spotify/ExportedPlaylists.kt",
     "com/opentune/data/spotify/YouTubePlaylists.kt",
     "com/opentune/data/autoeq/AutoEq.kt",
+    "com/opentune/playback/dsp/Space3D.kt",
     "com/opentune/data/podcasts/Podcasts.kt",
     "com/opentune/data/radio/Radio.kt",
     "com/opentune/data/Http.kt",
@@ -115,6 +116,9 @@ val sharedFromCore = listOf(
  * labels, which reach into Android, have desktop stand-ins in src/shim.
  */
 val appSources = rootProject.file("app/src/main/java")
+tasks.processResources {
+    from(rootProject.file("core/src/main/assets/i18n")) { into("i18n") }
+}
 val sharedFromApp = listOf(
     "com/opentune/ui/BottomChrome.kt",
     "com/opentune/ui/SideChrome.kt",
