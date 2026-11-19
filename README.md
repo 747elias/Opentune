@@ -78,6 +78,16 @@ documented in [service integrations](docs/service-integrations.md).
 
 Each release lists SHA-256 checksums of its APKs in `SHA256SUMS.txt`.
 
+### Arch Linux and Hyprland
+
+Download `opentune-<version>-1-x86_64.pkg.tar.zst` from [GitHub Releases](https://github.com/747elias/Opentune/releases) and install it with pacman. For example, from your Downloads folder:
+
+```sh
+sudo pacman -U ./opentune-1.1.0-1-x86_64.pkg.tar.zst
+```
+
+Launch **OpenTune** from your app launcher or run `opentune`. The package bundles Java and FFmpeg. On Hyprland the window runs through XWayland, with class `com-opentune-desktop-MainKt`. Playback uses the default PulseAudio or PipeWire-Pulse output when available, with ALSA as a fallback. Playback controls are available over MPRIS for `playerctl` and Waybar. Use **Library → Open audio files**, or open an audio file with OpenTune from your file manager, to play it offline.
+
 ### iPhone and iPad
 
 **Requires iOS/iPadOS 16 or newer. An Android APK cannot be installed on an iPhone.**
@@ -401,9 +411,7 @@ on your own connection with no hosted proxy.
   library (liked songs, playlists and the full play history) is kept in
   SQLite. It uses the phone app's code for YouTube Music, lyrics, Subsonic
   and settings as-is, but finds streams with NewPipe only, so some songs
-  don't play yet. Signing in to YouTube Music isn't there. On Linux, songs
-  from your own server and JioSaavn still play through JavaFX, which needs
-  the system's FFmpeg libraries (libavcodec).
+  don't play yet. YouTube Music account sign-in is unavailable on the desktop.
 - **Opens YouTube links.** music.youtube.com, youtube.com and youtu.be
   links, or links shared to the app, open in OpenTune.
 

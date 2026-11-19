@@ -147,6 +147,7 @@ class SourcesTest {
             source = { if (slow) trickle(file) else file.inputStream() }, startAtMs = { startAtMs }, autoplay = true,
             onStarted = {}, onEnd = { done.countDown() }, onError = { problem = it; done.countDown() }, out = out,
         )
+        engine.start()
         assertTrue("finished", done.await(30, TimeUnit.SECONDS))
         engine.dispose()
         assertNull(problem)
@@ -177,6 +178,7 @@ class SourcesTest {
         val done = CountDownLatch(1)
         val engine = FlacEngine(source = { file.inputStream() }, startAtMs = { 0 }, autoplay = false,
             onStarted = {}, onEnd = { done.countDown() }, onError = { done.countDown() }, out = out)
+        engine.start()
         val deadline = System.currentTimeMillis() + 10_000
         while ((engine.durationMs() == 0L || !engine.arrivedAll) && System.currentTimeMillis() < deadline) Thread.sleep(10)
         engine.seek(1_000)

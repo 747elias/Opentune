@@ -204,10 +204,9 @@ jobs:
         with:
           packages: platform-tools platforms;android-37.0 build-tools;36.0.0 ndk;27.2.12479018 cmake;3.22.1
       - uses: gradle/actions/setup-gradle@v4
-      # jpackage builds the .rpm with the system's own rpmbuild.
-      - name: RPM tools
+      - name: Linux packaging tools
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y rpm
+        run: sudo apt-get update && sudo apt-get install -y rpm libarchive-tools zstd
       - name: Desktop tests and installers
         shell: bash
         env:
@@ -227,6 +226,25 @@ jobs:
       - name: AppImage
         if: runner.os == 'Linux'
         run: desktop/packaging/appimage.sh desktop/build/compose/binaries/main/app/OpenTune desktop/build/compose/binaries/main/appimage/OpenTune-x86_64.AppImage
+      - name: Arch Linux package
+        if: runner.os == 'Linux'
+        run: desktop/packaging/arch.sh desktop/build/compose/binaries/main/app/OpenTune desktop/build/compose/binaries/main/arch
+      - name: Verify package in Arch Linux
+        if: runner.os == 'Linux'
+        run: |
+          docker run --rm -v "$PWD/desktop/build/compose/binaries/main/arch:/packages:ro" archlinux:base bash -euc '
+            pacman -Syu --noconfirm
+            pacman -U --noconfirm /packages/*.pkg.tar.zst
+            pacman -Qkk opentune
+            opentune --self-check
+          '
+      - name: Upload Arch Linux package
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v7
+        with:
+          path: desktop/build/compose/binaries/main/arch/*.pkg.tar.zst
+          if-no-files-found: error
+          archive: false
       # Unzip anywhere and run OpenTune.exe: the app image, zipped.
       - name: Portable zip
         if: runner.os == 'Windows'

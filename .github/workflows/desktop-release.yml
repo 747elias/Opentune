@@ -6,6 +6,7 @@
 # Each file is named for the release and the system it's for, e.g.
 #   OpenTune-v1.0.4-windows-x64-setup.exe   OpenTune-v1.0.4-macos-arm64.dmg
 #   OpenTune-v1.0.4-linux-x86_64.AppImage   OpenTune-v1.0.4-linux-amd64.deb
+#   opentune-1.0.4-1-x86_64.pkg.tar.zst
 # Running again for the same tag replaces them.
 name: Desktop release
 
@@ -95,9 +96,9 @@ jobs:
         with:
           packages: platform-tools platforms;android-37.0 build-tools;36.0.0 ndk;27.2.12479018 cmake;3.22.1
       - uses: gradle/actions/setup-gradle@v4
-      - name: RPM tools
+      - name: Linux packaging tools
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y rpm
+        run: sudo apt-get update && sudo apt-get install -y rpm libarchive-tools zstd
       - name: Installers
         shell: bash
         env:
@@ -123,6 +124,9 @@ jobs:
               cp "$bin"/deb/*.deb "$out/OpenTune-$TAG-linux-amd64.deb"
               cp "$bin"/rpm/*.rpm "$out/OpenTune-$TAG-linux-x86_64.rpm"
               desktop/packaging/appimage.sh "$bin/app/OpenTune" "$out/OpenTune-$TAG-linux-x86_64.AppImage"
+              if [ -f desktop/packaging/arch.sh ]; then
+                desktop/packaging/arch.sh "$bin/app/OpenTune" "$out"
+              fi
               ;;
             Windows)
               cp "$bin"/msi/*.msi "$out/OpenTune-$TAG-windows-x64.msi"

@@ -61,6 +61,8 @@ On computers, YouTube's Opus stream and other formats are decoded by
 [JavaCV](https://github.com/bytedeco/javacv) and
 [JavaCPP Presets](https://github.com/bytedeco/javacpp-presets) (Apache
 License 2.0 and GPLv2 with the Classpath exception).
+On Linux, system media controls use [dbus-java](https://github.com/hypfvieh/dbus-java)
+under the MIT License.
 
 ## BitChord browser player and audio compatibility fixes
 

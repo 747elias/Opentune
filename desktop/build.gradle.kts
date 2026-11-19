@@ -229,6 +229,10 @@ dependencies {
     implementation("com.google.zxing:core:3.5.4")
     // Windows' own frame and materials under the title bar the app draws: user32 and dwmapi, from Kotlin.
     implementation("net.java.dev.jna:jna:5.17.0")
+    implementation("com.github.hypfvieh:dbus-java-core:5.2.2")
+    if (javafxPlatform.startsWith("linux")) {
+        runtimeOnly("com.github.hypfvieh:dbus-java-transport-native-unixsocket:5.2.2")
+    }
 
     // The phone's colour engine (schemes from a seed or the cover) and the blur behind its glass.
     implementation("com.materialkolor:material-kolor:4.0.0")
@@ -277,6 +281,7 @@ compose.desktop {
             vendor = "OpenTune"
             // What jlink's scan suggests, plus scripting for Rhino, java.sql for the library and EC ciphers for HTTPS.
             modules("java.instrument", "java.management", "java.net.http", "java.scripting", "java.sql", "jdk.crypto.ec", "jdk.dynalink", "jdk.httpserver", "jdk.jfr", "jdk.unsupported")
+            if (javafxPlatform.startsWith("linux")) modules("jdk.net", "jdk.security.auth")
             macOS {
                 iconFile.set(project.file("packaging/icons/AppIcon.icns"))
                 bundleID = "com.opentune.desktop"

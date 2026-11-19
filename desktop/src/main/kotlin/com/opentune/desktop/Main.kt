@@ -1,5 +1,6 @@
 package com.opentune.desktop
 
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Window
@@ -17,7 +18,7 @@ import java.io.File
 internal val appContext by lazy { android.content.Context(File(System.getProperty("user.home"), ".opentune")) }
 
 fun main(args: Array<String>) {
-    if ("--self-check" in args) return selfCheck()
+    if (args.contentEquals(arrayOf("--self-check"))) return selfCheck()
     // The shared settings and music server, as the phone starts them.
     AppSettings.init(appContext)
     Subsonic.init(appContext)
@@ -34,6 +35,8 @@ fun main(args: Array<String>) {
             .build()
     }
     application {
+        LaunchedEffect(Unit) { LinuxMpris.serve() }
+        LaunchedEffect(Unit) { LocalAudio.play(args.map(::File)) }
         Window(
             onCloseRequest = ::exitApplication,
             title = "OpenTune",
@@ -48,7 +51,7 @@ fun main(args: Array<String>) {
             DesktopWindow.style(window)
             DesktopWindow.window = window
             DesktopWindow.close = ::exitApplication
-            if (WindowsFrame.drawn) androidx.compose.runtime.LaunchedEffect(Unit) {
+            if (WindowsFrame.drawn) LaunchedEffect(Unit) {
                 // The handle exists once the window is on screen.
                 repeat(20) {
                     if (window.isDisplayable && window.windowHandle != 0L && WindowsFrame.install(window.windowHandle)) return@LaunchedEffect

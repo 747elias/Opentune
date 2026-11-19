@@ -57,6 +57,7 @@ import com.opentune.data.lyrics.LyricLine
 import com.opentune.data.lyrics.Lyrics
 import com.opentune.data.lyrics.LyricsRepository
 import com.opentune.data.lyrics.SongParts
+import com.opentune.data.local.LocalMusic
 import com.opentune.data.lyrics.VOICE_SECOND
 import com.opentune.data.lyrics.activeIndex
 import com.opentune.data.lyrics.lyricsOffset
@@ -80,6 +81,7 @@ internal sealed interface LyricsState {
  */
 @Composable
 internal fun rememberLyrics(song: Song): LyricsState {
+    if (LocalMusic.isLocal(song.videoId)) return LyricsState.NotFound
     val settings by AppSettings.lyrics.collectAsState()
     var state by remember(song.videoId) { mutableStateOf<LyricsState>(LyricsState.Loading) }
     val asked = Triple(settings.ordered, settings.preferWordSynced, settings.chosen[song.videoId])

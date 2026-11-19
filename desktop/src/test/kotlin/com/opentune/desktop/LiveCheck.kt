@@ -66,6 +66,7 @@ class LiveCheck {
             Relay.addressOf(id, Streams.Kind.OPUS), startAtMs = { 0 }, autoplay = true,
             onReady = { length = it }, onStarted = {}, onPlaying = {}, onEnd = {}, onError = { problem = it; enough.countDown() }, out = out,
         )
+        engine.start()
         enough.await(60, java.util.concurrent.TimeUnit.SECONDS)
         engine.dispose()
         println("LIVE ffmpeg: ${played / 48} ms decoded of $length ms, problem $problem")

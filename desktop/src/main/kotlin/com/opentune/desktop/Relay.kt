@@ -3,10 +3,14 @@ package com.opentune.desktop
 import com.opentune.data.Http
 import com.sun.net.httpserver.HttpExchange
 import com.sun.net.httpserver.HttpServer
+import java.io.Closeable
 import java.net.InetAddress
 import java.net.InetSocketAddress
+import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import kotlinx.coroutines.runBlocking
+import okhttp3.Call
 import okhttp3.Request
 
 /**
@@ -18,11 +22,20 @@ import okhttp3.Request
 object Relay {
     /** YouTube serves large ranges slowly; a megabyte at a time keeps it quick. */
     private const val PIECE = 1L shl 20
+    private val directStreams = ConcurrentHashMap<String, DirectStream>()
 
     private val server: HttpServer by lazy {
-        HttpServer.create(InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 16).apply {
+        HttpServer.create(InetSocketAddress(InetAddress.getByName("127.0.0.1"), 0), 16).apply {
             executor = Executors.newCachedThreadPool { r -> Thread(r, "relay").apply { isDaemon = true } }
             createContext("/song/") { exchange -> try { serve(exchange) } finally { exchange.close() } }
+            createContext("/stream/") { exchange ->
+                try {
+                    val stream = directStreams[exchange.requestURI.path.removePrefix("/stream/")]
+                    if (stream == null) exchange.sendResponseHeaders(404, -1) else stream.serve(exchange)
+                } finally {
+                    exchange.close()
+                }
+            }
             start()
         }
     }
@@ -30,6 +43,56 @@ object Relay {
     /** The address an engine plays [videoId] from, in [kind]; JavaFX goes by the extension. */
     fun addressOf(videoId: String, kind: Streams.Kind = Streams.Kind.AAC): String =
         "http://127.0.0.1:${server.address.port}/song/$videoId.${kind.extension}"
+
+    /** Keep HTTPS verification and private server credentials in the app's HTTP client. */
+    internal fun direct(address: String): DirectStream {
+        val token = UUID.randomUUID().toString()
+        return DirectStream(token, address).also { directStreams[token] = it }
+    }
+
+    internal class DirectStream(private val token: String, private val upstream: String) : Closeable {
+        val address = "http://127.0.0.1:${server.address.port}/stream/$token"
+        private val calls = mutableSetOf<Call>()
+        private var closed = false
+
+        fun serve(exchange: HttpExchange) {
+            val method = exchange.requestMethod
+            if (method != "GET" && method != "HEAD") return exchange.sendResponseHeaders(405, -1)
+            val request = Request.Builder().url(upstream).method(method, null).apply {
+                exchange.requestHeaders.getFirst("Range")?.let { header("Range", it) }
+            }.build()
+            val call = Http.client.newCall(request)
+            if (!synchronized(calls) { !closed && calls.add(call) }) return exchange.sendResponseHeaders(404, -1)
+            try {
+                val response = runCatching { call.execute() }.getOrNull()
+                    ?: return exchange.sendResponseHeaders(502, -1)
+                response.use {
+                    val body = it.body
+                    for (header in listOf("Content-Type", "Content-Range", "Accept-Ranges")) {
+                        it.header(header)?.let { value -> exchange.responseHeaders.set(header, value) }
+                    }
+                    val length = body?.contentLength() ?: 0L
+                    if (method == "HEAD" || !it.isSuccessful || body == null || length == 0L) {
+                        if (method == "HEAD") it.header("Content-Length")?.let { value -> exchange.responseHeaders.set("Content-Length", value) }
+                        exchange.sendResponseHeaders(it.code, -1)
+                    } else {
+                        exchange.sendResponseHeaders(it.code, length.coerceAtLeast(0L))
+                        runCatching { body.byteStream().copyTo(exchange.responseBody) }
+                    }
+                }
+            } finally {
+                synchronized(calls) { calls.remove(call) }
+            }
+        }
+
+        override fun close() {
+            directStreams.remove(token, this)
+            synchronized(calls) {
+                closed = true
+                calls.forEach { it.cancel() }
+            }
+        }
+    }
 
     private fun serve(exchange: HttpExchange) {
         val name = exchange.requestURI.path.removePrefix("/song/")
