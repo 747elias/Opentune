@@ -135,5 +135,3 @@ class SmartDownloadWorker(context: Context, parameters: WorkerParameters) : Coro
         return Result.success()
     }
 }
-
-internal class SmartDownloadDeferred : java.io.IOException("Smart downloads wait for Wi-Fi, battery and free space")

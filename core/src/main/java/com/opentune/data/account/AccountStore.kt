@@ -6,7 +6,6 @@ import androidx.core.content.edit
 import com.opentune.data.DebugLog as Log
 import com.opentune.data.innertube.Innertube
 import com.opentune.data.innertube.InnertubeParser
-import com.opentune.data.innertube.StreamResolver
 import com.opentune.data.model.Account
 import java.util.UUID
 import kotlinx.coroutines.CoroutineScope
@@ -45,6 +44,7 @@ object AccountStore {
     private const val K_EMAIL = "profile_email"
     private const val K_PHOTO = "profile_photo"
     private var prefs: SharedPreferences? = null
+    private var onSessionChanged: () -> Unit = {}
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
 
@@ -83,6 +83,7 @@ object AccountStore {
     }
 
     /** Listens as [channel] from now on, on the active account; remembered for it. */
+    @Synchronized
     fun listenAs(channel: com.opentune.data.model.AccountChannel, own: Boolean) {
         val id = activeId ?: return
         val i = saved.indexOfFirst { it.id == id }.takeIf { it >= 0 } ?: return
@@ -96,6 +97,7 @@ object AccountStore {
     }
 
     /** Takes a saved account off this phone; the active one is signed out as [signOut] does. */
+    @Synchronized
     fun remove(id: String) {
         if (id == activeId) { signOut(); return }
         if (saved.removeAll { it.id == id }) { persist(); publish() }
@@ -105,7 +107,11 @@ object AccountStore {
     /** Every saved account, newest sign-in last, with the active one flagged. */
     val accounts: StateFlow<List<SavedAccount>> = _accounts.asStateFlow()
 
-    fun init(context: Context) {
+    @Synchronized
+    fun init(context: Context, onSessionChanged: () -> Unit = {}) {
+        loading?.cancel()
+        fresh = false
+        this.onSessionChanged = onSessionChanged
         val p = context.getSharedPreferences("account", Context.MODE_PRIVATE)
         prefs = p
         saved.clear()
@@ -133,7 +139,10 @@ object AccountStore {
         cookie.split(';').any { it.trim().substringBefore('=') in SESSION_COOKIES }
 
     /** Signs in a freshly captured cookie as a new active account. */
+    @Synchronized
     fun signIn(cookie: String) {
+        require(hasSession(cookie))
+        loading?.cancel()
         val id = UUID.randomUUID().toString()
         saved.add(Stored(id, cookie))
         activeId = id
@@ -142,7 +151,7 @@ object AccountStore {
         Innertube.selectChannel(null, null)
         _listeningAs.value = null
         // Verdicts and client stand-downs made under another session don't hold now.
-        StreamResolver.onSessionChanged()
+        onSessionChanged()
         _signedIn.value = true
         _account.value = null
         persist()
@@ -151,6 +160,7 @@ object AccountStore {
     }
 
     /** Makes a saved account the active one. */
+    @Synchronized
     fun switchTo(id: String) {
         if (id == activeId || saved.none { it.id == id }) return
         loading?.cancel()
@@ -163,6 +173,7 @@ object AccountStore {
     }
 
     /** Signs out the active account; another saved account takes over if there is one. */
+    @Synchronized
     fun signOut() {
         loading?.cancel()
         fresh = false
@@ -182,7 +193,7 @@ object AccountStore {
             Innertube.cookie = null
             Innertube.selectChannel(null, null)
             _listeningAs.value = null
-            if (announce) StreamResolver.onSessionChanged()
+            if (announce) onSessionChanged()
             _signedIn.value = false
             _account.value = null
             return
@@ -191,7 +202,7 @@ object AccountStore {
         // The account's chosen profile; its own when none was chosen.
         Innertube.selectChannel(a.pageId, a.dataSyncId)
         _listeningAs.value = a.channelName
-        if (announce) StreamResolver.onSessionChanged()
+        if (announce) onSessionChanged()
         _signedIn.value = true
         _account.value = if (a.name.isNotBlank()) Account(a.name, a.email, a.photo) else null
     }
@@ -217,6 +228,7 @@ object AccountStore {
      * widget refreshes after an update, say) before the phone lets it go
      * online, and that process then lives on into the next time the app opens.
      */
+    @Synchronized
     fun refreshProfile() {
         loading?.cancel()
         val target = activeId
@@ -227,14 +239,16 @@ object AccountStore {
                     Innertube.ensureSessionScope()
                     InnertubeParser.parseAccount(Innertube.accountMenu())
                 }
-                if (!_signedIn.value || activeId != target) return@launch
                 // No profile in the answer is treated like no answer: the one from last time stays.
                 val a = result.getOrNull()
-                if (a != null) {
-                    _account.value = a
-                    fresh = true
-                    record(target, a)
-                    return@launch
+                synchronized(this@AccountStore) {
+                    if (!_signedIn.value || activeId != target) return@launch
+                    if (a != null) {
+                        _account.value = a
+                        fresh = true
+                        record(target, a)
+                        return@launch
+                    }
                 }
                 val why = com.opentune.i18n.Tr.f("Couldn't read the account profile (try {0})", attempt + 1)
                 result.exceptionOrNull()?.let { Log.w(TAG, why, it) } ?: Log.w(TAG, "$why: no profile in the answer")

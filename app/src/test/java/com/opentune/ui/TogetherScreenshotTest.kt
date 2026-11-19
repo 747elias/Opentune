@@ -20,6 +20,7 @@ import org.junit.Assert.assertNull
 import com.opentune.ui.together.TogetherScreen
 import com.opentune.data.together.Member
 import com.opentune.data.together.RoomCode
+import com.opentune.data.together.RoomProtocol
 import com.opentune.data.together.Together
 import com.opentune.data.together.Track
 import com.opentune.ui.together.RoomView
@@ -99,17 +100,17 @@ class TogetherScreenshotTest {
 
     @Test fun room() {
         val code = RoomCode.parse("K7QX-M2PA-9DTE")!!
-        val room = Together.Room(
-            code = code, hosting = true, myName = "Asha", phase = Together.Phase.Live, relays = 6,
+        val room = RoomProtocol.Room(
+            code = code, hosting = true, myName = "Asha", phase = RoomProtocol.Phase.Live, relays = 6,
             members = listOf(Member("a", "Asha", host = true), Member("b", "Ravi"), Member("c", "Meera")),
             hostName = "Asha", open = false,
             track = Track("4NRXx6U8ABQ", "Blinding Lights", "The Weeknd"),
             chat = listOf(
-                Together.ChatLine("", "Room open. Share the code so friends can join.", system = true),
-                Together.ChatLine("", "Ravi joined", system = true),
-                Together.ChatLine("Ravi", "this one's a classic"),
-                Together.ChatLine("Asha", "turn it up", mine = true),
-                Together.ChatLine("", "Meera added Levitating", system = true),
+                RoomProtocol.ChatLine("", "Room open. Share the code so friends can join.", system = true),
+                RoomProtocol.ChatLine("", "Ravi joined", system = true),
+                RoomProtocol.ChatLine("Ravi", "this one's a classic"),
+                RoomProtocol.ChatLine("Asha", "turn it up", mine = true),
+                RoomProtocol.ChatLine("", "Meera added Levitating", system = true),
             ),
         )
         shoot("together-room") { RoomView(room, onBack = {}) }
@@ -117,10 +118,10 @@ class TogetherScreenshotTest {
 
     /** A new room's first messages arrive once it's open; it stays at its top, on the code and the invite. */
     @Test fun roomOpensAtItsTop() {
-        val line = Together.ChatLine("", "Ravi joined", system = true)
+        val line = RoomProtocol.ChatLine("", "Ravi joined", system = true)
         val room = androidx.compose.runtime.mutableStateOf(
-            Together.Room(
-                code = RoomCode.parse("K7QX-M2PA-9DTE")!!, hosting = true, myName = "Asha", phase = Together.Phase.Live,
+            RoomProtocol.Room(
+                code = RoomCode.parse("K7QX-M2PA-9DTE")!!, hosting = true, myName = "Asha", phase = RoomProtocol.Phase.Live,
                 members = listOf(Member("a", "Asha", host = true)), hostName = "Asha",
             ),
         )
@@ -136,21 +137,21 @@ class TogetherScreenshotTest {
     @Test @Config(sdk = [35], qualifiers = "w411dp-h2000dp-xxhdpi", application = android.app.Application::class)
     fun roomWithRequestsAndVoice() {
         val code = RoomCode.parse("K7QX-M2PA-9DTE")!!
-        val note = Together.VoiceClip("b/n1", byteArrayOf(0x14, 0x08), listOf(ByteArray(10)), 12_000, complete = true, live = false)
-        val talk = Together.VoiceClip("c/t1", byteArrayOf(0x14, 0x08), listOf(ByteArray(10)), 4_000, complete = true, live = true)
-        val room = Together.Room(
-            code = code, hosting = true, myName = "Asha", phase = Together.Phase.Live, relays = 6, myId = "a",
+        val note = RoomProtocol.VoiceClip("b/n1", byteArrayOf(0x14, 0x08), listOf(ByteArray(10)), 12_000, complete = true, live = false)
+        val talk = RoomProtocol.VoiceClip("c/t1", byteArrayOf(0x14, 0x08), listOf(ByteArray(10)), 4_000, complete = true, live = true)
+        val room = RoomProtocol.Room(
+            code = code, hosting = true, myName = "Asha", phase = RoomProtocol.Phase.Live, relays = 6, myId = "a",
             members = listOf(Member("a", "Asha", host = true), Member("b", "Ravi"), Member("c", "Meera")),
             requests = listOf(Member("d", "Kabir")),
             hostName = "Asha", open = true,
             talking = listOf("c"),
             track = Track("4NRXx6U8ABQ", "Blinding Lights", "The Weeknd"),
             chat = listOf(
-                Together.ChatLine("", "Ravi joined", system = true, at = 1_760_000_000_000),
-                Together.ChatLine("Ravi", "this one's a classic", at = 1_760_000_060_000),
-                Together.ChatLine("Ravi", "", voice = note, at = 1_760_000_090_000),
-                Together.ChatLine("Asha", "turn it up", mine = true, at = 1_760_000_120_000),
-                Together.ChatLine("Meera", "", voice = talk, at = 1_760_000_150_000),
+                RoomProtocol.ChatLine("", "Ravi joined", system = true, at = 1_760_000_000_000),
+                RoomProtocol.ChatLine("Ravi", "this one's a classic", at = 1_760_000_060_000),
+                RoomProtocol.ChatLine("Ravi", "", voice = note, at = 1_760_000_090_000),
+                RoomProtocol.ChatLine("Asha", "turn it up", mine = true, at = 1_760_000_120_000),
+                RoomProtocol.ChatLine("Meera", "", voice = talk, at = 1_760_000_150_000),
             ),
         )
         shoot("together-room-full") { RoomView(room, onBack = {}) }

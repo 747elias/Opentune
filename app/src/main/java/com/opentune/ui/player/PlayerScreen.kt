@@ -138,6 +138,7 @@ import com.opentune.data.settings.PlayerStyle
 import com.opentune.data.settings.RemixPreset
 import com.opentune.data.settings.SoundSettings
 import com.opentune.data.settings.ThemeSettings
+import com.opentune.data.together.RoomProtocol
 import com.opentune.data.together.Together
 import com.opentune.playback.AudioFormatInfo
 import com.opentune.playback.PlaybackRequests
@@ -1824,7 +1825,7 @@ fun MiniPlayerBar(vm: PlayerViewModel, onExpand: () -> Unit, modifier: Modifier 
 
 /** Shown where "Playing from" goes while in a room: whose room, and how many are in. */
 @Composable
-private fun TogetherPill(room: Together.Room, onClick: () -> Unit) {
+private fun TogetherPill(room: RoomProtocol.Room, onClick: () -> Unit) {
     AssistChip(
         onClick = onClick,
         label = {
@@ -1832,7 +1833,7 @@ private fun TogetherPill(room: Together.Room, onClick: () -> Unit) {
                 when {
                     room.hosting -> com.opentune.i18n.Tr.f("Your room · {0} listening", room.members.size)
                     room.holding -> com.opentune.i18n.Tr.f("Paused for you · {0}", room.hostName ?: com.opentune.i18n.Tr.t("room"))
-                    room.phase == Together.Phase.Live -> com.opentune.i18n.Tr.f("With {0} · {1} listening", room.hostName ?: com.opentune.i18n.Tr.t("the host"), room.members.size)
+                    room.phase == RoomProtocol.Phase.Live -> com.opentune.i18n.Tr.f("With {0} · {1} listening", room.hostName ?: com.opentune.i18n.Tr.t("the host"), room.members.size)
                     else -> "Listening together"
                 },
             )

@@ -2,6 +2,9 @@ package com.opentune.desktop
 
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyShortcut
+import androidx.compose.ui.window.MenuBar
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberWindowState
@@ -21,10 +24,23 @@ internal val appContext by lazy { android.content.Context(File(System.getPropert
 
 fun main(args: Array<String>) {
     if ("--self-check" in args) return selfCheck()
+    val uiCheck = "--ui-check" in args
+    if (uiCheck) System.setProperty("user.home", java.nio.file.Files.createTempDirectory("opentune-ui-check-").toString())
     // The shared settings and music server, as the phone starts them.
     AppSettings.init(appContext)
     Subsonic.init(appContext)
     com.opentune.data.config.RemoteConfig.init(appContext)
+    DesktopAccount.init(appContext)
+    com.opentune.data.radio.Radio.init(appContext)
+    com.opentune.data.podcasts.Podcasts.init(appContext)
+    com.opentune.data.library.ResumePoints.init(appContext)
+    com.opentune.data.listenbrainz.ListenBrainz.init(appContext)
+    com.opentune.data.autoeq.AutoEq.init(appContext)
+    OfflineDownloads.resumePending()
+    DesktopSession.start()
+    DesktopPlaybackServices.start()
+    DesktopLinks.install(args)
+    MacUpdates.start()
     // What's playing, to the listener's Discord profile and Last.fm scrobbles, when they've turned them on.
     DiscordPresence.start()
     LastFmDesktop.start()
@@ -37,8 +53,15 @@ fun main(args: Array<String>) {
             .build()
     }
     application {
+        val quit = {
+            DesktopSession.flush()
+            com.opentune.data.radio.Radio.flush()
+            com.opentune.data.podcasts.Podcasts.flush()
+            DesktopRooms.leave()
+            exitApplication()
+        }
         Window(
-            onCloseRequest = ::exitApplication,
+            onCloseRequest = quit,
             title = "OpenTune",
             icon = rememberLogo(Logo.APP),
             state = rememberWindowState(size = DpSize(1180.dp, 760.dp)),
@@ -50,7 +73,19 @@ fun main(args: Array<String>) {
             window.minimumSize = java.awt.Dimension(760, 520)
             DesktopWindow.style(window)
             DesktopWindow.window = window
-            DesktopWindow.close = ::exitApplication
+            DesktopWindow.close = quit
+            androidx.compose.runtime.LaunchedEffect(Unit) { MacMediaControls.start() }
+            MenuBar {
+                Menu("File") {
+                    Item("Open Link…", onClick = DesktopLinks::requestOpen,
+                        shortcut = KeyShortcut(Key.O, meta = DesktopWindow.isMac, ctrl = !DesktopWindow.isMac))
+                }
+                Menu("Playback") {
+                    Item("Play or Pause", onClick = Player::toggle)
+                    Item("Next Track", onClick = Player::next)
+                    Item("Previous Track", onClick = Player::previous)
+                }
+            }
             if (WindowsFrame.drawn) androidx.compose.runtime.LaunchedEffect(Unit) {
                 // The handle exists once the window is on screen.
                 repeat(20) {
@@ -58,7 +93,19 @@ fun main(args: Array<String>) {
                     kotlinx.coroutines.delay(100)
                 }
             }
-            DesktopApp()
+            DesktopApp(startTab = if (uiCheck) Tab.SETTINGS else Tab.HOME)
+            if (uiCheck) androidx.compose.runtime.LaunchedEffect(Unit) {
+                repeat(100) {
+                    if (window.isShowing) {
+                        kotlinx.coroutines.delay(1_200)
+                        println("OpenTune window: ready")
+                        kotlin.system.exitProcess(0)
+                    }
+                    kotlinx.coroutines.delay(100)
+                }
+                System.err.println("OpenTune window did not open")
+                kotlin.system.exitProcess(1)
+            }
         }
     }
 }
@@ -96,7 +143,7 @@ private fun selfCheck() {
         System.setProperty("jfxmedia.platforms", "OSXPlatform")
         check(com.sun.media.jfxmedia.MediaManager.canPlayContentType("audio/x-m4a")) { "AVFoundation AAC unavailable" }
         "AVFoundation loaded"
-    }) else emptyList()
+    }, "macOS MediaPlayer" to MacMediaControls::checkPackaged) else emptyList()
     var failed = false
     for ((name, run) in checks + platformChecks) {
         val result = runCatching(run)

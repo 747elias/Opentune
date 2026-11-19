@@ -7,6 +7,7 @@ import com.opentune.data.model.SearchResult
 import com.opentune.data.model.ShelfItem
 import com.opentune.data.model.Song
 import com.opentune.data.podcasts.PodcastParser
+import com.opentune.data.settings.AppSettings
 
 /** What the desktop pages show, from YouTube Music through the shared client. */
 object Pages {
@@ -29,7 +30,12 @@ object Pages {
 
     private fun shelves(rows: List<com.opentune.data.model.HomeShelf>): List<Shelf> = rows
         // A genre's own card (FEmusic_…) needs the parameters a card doesn't carry, so it can't be opened from here.
-        .map { Shelf(it.title, it.items.filter { i -> i.videoId != null || (i.browseId != null && !i.browseId!!.startsWith("FEmusic_")) }) }
+        .map { shelf ->
+            Shelf(shelf.title, shelf.items.filter { item ->
+                !(AppSettings.library.value.hideExplicit && item.explicit) &&
+                    (item.videoId != null || item.browseId?.startsWith("FEmusic_") == false)
+            })
+        }
         .filter { it.items.isNotEmpty() }
 
     /** Moods and genres, for the chips at the top of Home; read once a run. */
@@ -64,10 +70,10 @@ object Pages {
     /** The songs behind a card: an album or playlist's tracks, an artist's top songs, a podcast's episodes. */
     suspend fun songsOf(browseId: String): List<Song> {
         val page = Innertube.browse(browseId)
-        if (browseId.startsWith("UC")) return InnertubeParser.parseArtistPage(page).songs
+        if (browseId.startsWith("UC")) return InnertubeParser.parseArtistPage(page).songs.filter(::allowed)
         if (browseId.startsWith("MPSP")) return PodcastParser.parseShow(browseId, page).episodes.map { it.toSong() }
-        return InnertubeParser.parsePlaylistShelf(page)?.songs?.takeIf { it.isNotEmpty() }
-            ?: InnertubeParser.collectSongsDeep(page)
+        return (InnertubeParser.parsePlaylistShelf(page)?.songs?.takeIf { it.isNotEmpty() }
+            ?: InnertubeParser.collectSongsDeep(page)).filter(::allowed)
     }
 
     /** A card that plays on its own, as a song. */
@@ -88,5 +94,7 @@ object Pages {
             is SearchResult.Track -> it.song
             is SearchResult.Browse -> null
         }
-    }.distinctBy { it.videoId }
+    }.filter(::allowed).distinctBy { it.videoId }
+
+    internal fun allowed(song: Song): Boolean = !AppSettings.library.value.hideExplicit || song.isExplicit != true
 }

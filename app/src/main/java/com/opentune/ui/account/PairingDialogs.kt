@@ -53,21 +53,21 @@ fun ConfirmPairing() {
         }
         return
     }
-    FloatingCard(onDismiss = { if (!busy) PairingLinks.dismiss() }, title = "Connect your TV") {
+    FloatingCard(onDismiss = { if (!busy) PairingLinks.dismiss() }, title = "Connect a device") {
         Column(Modifier.padding(4.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-            Text(com.opentune.i18n.Tr.f("Share your YouTube Music session with the device at {0}? Approve only if you just scanned the QR code on your own TV.", current.host))
+            Text(com.opentune.i18n.Tr.f("Share your YouTube Music session with the device at {0}? Approve only if you just scanned the QR code on your own device.", current.host))
             Text(account?.email?.takeIf { it.isNotBlank() } ?: if (signedIn) "Your signed-in YouTube Music account" else "Sign in on this phone first.", color = MaterialTheme.colorScheme.onSurfaceVariant)
             status?.let { Text(it) }
             if (!signedIn) SheetButton("Sign in to YouTube Music", onClick = { login = true }, tone = SheetTone.Primary)
-            else if (!busy) SheetButton("Sign this TV in", tone = SheetTone.Primary, onClick = {
+            else if (!busy) SheetButton("Sign this device in", tone = SheetTone.Primary, onClick = {
                 busy = true; status = "Connecting securely…"
                 scope.launch {
                     try {
                         val cookie = Innertube.cookie ?: error("No session")
                         withContext(Dispatchers.IO) { PairingSender.send(current, cookie) }
-                        status = "Your TV is signed in."; PairingLinks.dismiss()
+                        status = "Your device is signed in."; PairingLinks.dismiss()
                     } catch (e: kotlinx.coroutines.CancellationException) { throw e }
-                    catch (_: Exception) { status = "Couldn't connect. Keep both devices on the same Wi-Fi and scan a fresh code from the TV." }
+                    catch (_: Exception) { status = "Couldn't connect. Keep both devices on the same local network and scan a fresh code." }
                     finally { busy = false }
                 }
             })

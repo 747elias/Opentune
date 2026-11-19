@@ -126,7 +126,7 @@ fun CastSheet(onDismiss: () -> Unit) {
             devices.forEach { d ->
                 DeviceRow(d, session?.target?.id == d.id) {
                     haptics.press()
-                    if (session?.target?.id != d.id) Cast.connect(context, d)
+                    if (session?.target?.id != d.id) Cast.connect(d)
                 }
             }
             AnimatedVisibility(devices.isEmpty(), enter = fadeIn(), exit = fadeOut()) {

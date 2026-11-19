@@ -59,17 +59,17 @@ class RoomTest {
         assumeTrue(System.getenv("OPENTUNE_LIVE_RELAYS") == "1")
         val code = RoomCode.generate()
         val filter = buildJsonObject {
-            put("kinds", JsonArray(listOf(JsonPrimitive(Together.KIND))))
+            put("kinds", JsonArray(listOf(JsonPrimitive(RoomProtocol.KIND))))
             put("#t", JsonArray(listOf(JsonPrimitive(code.tag))))
             put("since", System.currentTimeMillis() / 1000 - 10)
         }
-        val a = RelayPool(Together.RELAYS, filter).also { it.start() }
-        val b = RelayPool(Together.RELAYS, filter).also { it.start() }
+        val a = RelayPool(RoomProtocol.RELAYS, filter).also { it.start() }
+        val b = RelayPool(RoomProtocol.RELAYS, filter).also { it.start() }
         try {
             withTimeout(15_000) { a.connected.first { it >= 2 }; b.connected.first { it >= 2 } }
             println("relays connected: a=${a.connected.value} b=${b.connected.value}")
             val key = Schnorr.newPrivateKey()
-            val sent = NostrEvent.signed(key, Together.KIND, listOf(listOf("t", code.tag)), code.seal(Msg.encode(Msg.Chat("hello from a"))))
+            val sent = NostrEvent.signed(key, RoomProtocol.KIND, listOf(listOf("t", code.tag)), code.seal(Msg.encode(Msg.Chat("hello from a"))))
             val t0 = System.currentTimeMillis()
             assertTrue(a.publish(sent))
             val got = withTimeout(10_000) { b.events.first { it.id == sent.id } }

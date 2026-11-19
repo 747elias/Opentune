@@ -1,7 +1,5 @@
 package com.opentune.cast
 
-import android.content.Context
-import android.net.Uri
 import com.opentune.data.DebugLog as Log
 import com.opentune.data.Http
 import java.io.BufferedInputStream
@@ -11,6 +9,7 @@ import java.io.OutputStream
 import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
+import java.net.URI
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
@@ -18,7 +17,7 @@ import kotlinx.coroutines.runBlocking
 import okhttp3.Request
 
 /**
- * A small web server on the phone that a cast device fetches songs from.
+ * A small web server that a cast device fetches songs from.
  * Each song gets an unguessable path for as long as it's cast; behind it is
  * a file on the phone (a download or a song from the phone's library) or a
  * stream the phone fetches and passes through, with the headers the stream
@@ -33,7 +32,7 @@ object CastServer {
         val contentType: String
 
         class OnPhone(val file: File, override val contentType: String) : Source
-        class Content(val uri: Uri, override val contentType: String) : Source
+        class Content(override val contentType: String, val length: () -> Long, val open: () -> InputStream) : Source
 
         /**
          * A stream on the web. [open] gives its address and headers; it's
@@ -43,16 +42,14 @@ object CastServer {
     }
 
     private var server: ServerSocket? = null
-    private val pool = Executors.newCachedThreadPool()
+    private val pool = Executors.newCachedThreadPool { task -> Thread(task, "OpenTune cast server").apply { isDaemon = true } }
     private val sources = ConcurrentHashMap<String, Source>()
-    private lateinit var app: Context
 
     /** Starts listening if it isn't; returns the port. */
     @Synchronized
-    fun start(context: Context): Int {
-        app = context.applicationContext
+    fun start(address: InetAddress? = null): Int {
         server?.takeIf { !it.isClosed }?.let { return it.localPort }
-        val s = ServerSocket(0)
+        val s = ServerSocket(0, 32, address)
         server = s
         pool.execute {
             while (!s.isClosed) {
@@ -85,7 +82,7 @@ object CastServer {
             "audio/ogg" -> "ogg"
             else -> "audio"
         }
-        return "http://${host.hostAddress}:$port/s/$token.$ext"
+        return URI("http", null, host.hostAddress, port, "/s/$token.$ext", null, null).toASCIIString()
     }
 
     private fun serve(socket: Socket) = socket.use { s ->
@@ -111,10 +108,7 @@ object CastServer {
         val head = method == "HEAD"
         when (source) {
             is Source.OnPhone -> sendLocal(out, source.contentType, source.file.length(), range, head) { source.file.inputStream() }
-            is Source.Content -> {
-                val length = runCatching { app.contentResolver.openFileDescriptor(source.uri, "r")?.use { it.statSize } }.getOrNull() ?: -1L
-                sendLocal(out, source.contentType, length, range, head) { app.contentResolver.openInputStream(source.uri) ?: error("can't open ${source.uri}") }
-            }
+            is Source.Content -> sendLocal(out, source.contentType, source.length(), range, head, source.open)
             is Source.Web -> sendWeb(out, source, range, head)
         }
     }

@@ -65,11 +65,28 @@ ditto "$intel_app" "$intel_payload"
 # Keep helper IDs distinct from the Finder-facing application.
 plutil -replace CFBundleIdentifier -string "$bundle_id.arm64" "$arm_payload/Contents/Info.plist"
 plutil -replace CFBundleIdentifier -string "$bundle_id.x86-64" "$intel_payload/Contents/Info.plist"
+for plist in "$contents/Info.plist" "$arm_payload/Contents/Info.plist" "$intel_payload/Contents/Info.plist"; do
+    plutil -replace NSMicrophoneUsageDescription -string 'Identify songs and send voice in listening rooms when you choose.' "$plist"
+    plutil -replace NSLocalNetworkUsageDescription -string 'Connect to your phone and compatible devices on your network.' "$plist"
+    plutil -replace NSBonjourServices -json '["_googlecast._tcp"]' "$plist"
+done
+plutil -replace CFBundleURLTypes -json '[{"CFBundleURLName":"com.opentune.desktop.links","CFBundleURLSchemes":["opentune"]}]' "$contents/Info.plist"
 
 xcrun clang -arch arm64 -arch x86_64 -mmacosx-version-min=11.0 \
     -std=c11 -D_DARWIN_C_SOURCE -O2 -Wall -Wextra -Werror \
     "$scripts/macos-launcher.c" -o "$contents/MacOS/OpenTune"
 xcrun lipo "$contents/MacOS/OpenTune" -verify_arch arm64 x86_64
+
+media=libOpenTuneMedia.dylib
+xcrun clang -arch arm64 -arch x86_64 -mmacosx-version-min=11.0 \
+    -fobjc-arc -fblocks -O2 -Wall -Wextra -Werror -dynamiclib \
+    -framework Foundation -framework MediaPlayer -Wl,-install_name,@rpath/$media \
+    "$scripts/macos-now-playing.m" -o "$work/$media"
+xcrun lipo "$work/$media" -verify_arch arm64 x86_64
+for payload in "$arm_payload" "$intel_payload"; do
+    mkdir -p "$payload/Contents/Frameworks"
+    cp "$work/$media" "$payload/Contents/Frameworks/$media"
+done
 
 sign=(codesign --force --sign "$identity")
 if [[ "$identity" != - ]]; then
@@ -87,6 +104,7 @@ sign_payload() {
         fi
     done < <(find "$runtime" -type f \( -perm -100 -o -name '*.dylib' \) -print0)
     "${sign[@]}" "$runtime"
+    "${sign[@]}" "$payload/Contents/Frameworks/$media"
 
     # The JVM compiles code at runtime and extracts media and graphics libraries from jars.
     if [[ "$identity" != - ]]; then

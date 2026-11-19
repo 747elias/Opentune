@@ -20,7 +20,7 @@ object Relay {
     private const val PIECE = 1L shl 20
 
     private val server: HttpServer by lazy {
-        HttpServer.create(InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 16).apply {
+        HttpServer.create(InetSocketAddress(InetAddress.getByName("127.0.0.1"), 0), 16).apply {
             executor = Executors.newCachedThreadPool { r -> Thread(r, "relay").apply { isDaemon = true } }
             createContext("/song/") { exchange -> try { serve(exchange) } finally { exchange.close() } }
             start()
@@ -28,22 +28,24 @@ object Relay {
     }
 
     /** The address an engine plays [videoId] from, in [kind]; JavaFX goes by the extension. */
-    fun addressOf(videoId: String, kind: Streams.Kind = Streams.Kind.AAC): String =
-        "http://127.0.0.1:${server.address.port}/song/$videoId.${kind.extension}"
+    fun addressOf(videoId: String, kind: Streams.Kind = Streams.Kind.AAC, maxKbps: Int = Int.MAX_VALUE): String =
+        "http://127.0.0.1:${server.address.port}/song/$videoId.${kind.extension}?maxKbps=$maxKbps"
 
     private fun serve(exchange: HttpExchange) {
         val name = exchange.requestURI.path.removePrefix("/song/")
         val kind = Streams.Kind.entries.firstOrNull { name.endsWith(".${it.extension}") } ?: return exchange.sendResponseHeaders(404, -1)
         val videoId = name.removeSuffix(".${kind.extension}").takeIf { it.matches(VIDEO_ID) }
             ?: return exchange.sendResponseHeaders(404, -1)
-        var stream = runCatching { runBlocking { Streams.resolve(videoId, kind = kind) } }.getOrElse {
+        val maxKbps = exchange.requestURI.rawQuery?.removePrefix("maxKbps=")?.toIntOrNull()?.takeIf { it > 0 }
+            ?: Int.MAX_VALUE
+        var stream = runCatching { runBlocking { Streams.resolve(videoId, kind = kind, maxKbps = maxKbps) } }.getOrElse {
             System.err.println("Relay: no stream for $videoId: $it")
             return exchange.sendResponseHeaders(502, -1)
         }
         val size = runCatching { length(stream.url) }.getOrElse { first ->
             System.err.println("Relay: $videoId refused ($first), looking again")
             Streams.forget(videoId)
-            stream = runCatching { runBlocking { Streams.resolve(videoId, fresh = true, kind = kind) } }.getOrNull()
+            stream = runCatching { runBlocking { Streams.resolve(videoId, fresh = true, kind = kind, maxKbps = maxKbps) } }.getOrNull()
                 ?: return exchange.sendResponseHeaders(502, -1)
             runCatching { length(stream.url) }.getOrElse {
                 System.err.println("Relay: $videoId refused again ($it)")

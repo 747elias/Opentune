@@ -3,21 +3,30 @@ package com.opentune.data.history
 import com.opentune.data.account.AccountStore
 import com.opentune.data.innertube.Innertube
 import com.opentune.data.settings.AppSettings
-import com.opentune.data.innertube.StreamResolver
 import java.security.SecureRandom
 
 /** Account writes follow the sync preference; add-on audio uses the original YouTube identity. */
 internal object YouTubeHistory {
+    private var timestampFor: suspend (String) -> Int? = { null }
+    private var onPlayback: () -> Unit = {}
+
+    fun init(signatureTimestamp: suspend (String) -> Int?, onPlayback: () -> Unit = {}) {
+        timestampFor = signatureTimestamp
+        this.onPlayback = onPlayback
+    }
+
     fun session(videoId: String, active: () -> Boolean): YouTubeHistorySession? {
         if (!videoId.matches(Regex("[A-Za-z0-9_-]{11}"))) return null
         val cookie = Innertube.cookie ?: return null
         val account = AccountStore.accounts.value.firstOrNull { it.active }?.id
+        val channel = AccountStore.listeningAs.value
         val allowed = {
             val settings = AppSettings.playback.value
             active() && !settings.pauseListeningHistory &&
                 settings.listeningHistoryTarget == ListeningHistoryTarget.YOUTUBE_MUSIC &&
                 Innertube.cookie == cookie &&
-                AccountStore.accounts.value.firstOrNull { it.active }?.id == account
+                AccountStore.accounts.value.firstOrNull { it.active }?.id == account &&
+                AccountStore.listeningAs.value == channel
         }
         if (!allowed()) return null
         val random = SecureRandom()
@@ -26,7 +35,7 @@ internal object YouTubeHistory {
         return YouTubeHistorySession(object : YouTubeHistorySession.Transport {
             private var tracking: Innertube.PlaybackTracking? = null
             override suspend fun prepare(): Boolean {
-                val timestamp = StreamResolver.signatureTimestamp(videoId)
+                val timestamp = timestampFor(videoId)
                 if (!allowed()) return false
                 tracking = Innertube.playbackTracking(videoId, timestamp)
                 if (tracking == null && allowed()) com.opentune.data.DebugLog.w("ListeningHistory", "YouTube did not provide account history tracking; will retry after more listening")
@@ -35,7 +44,7 @@ internal object YouTubeHistory {
             override suspend fun playback(): Boolean {
                 val t = tracking ?: return false
                 val ok = accepted(Innertube.pingPlayback(t.playbackUrl, nonce, allowed))
-                if (ok) com.opentune.data.MusicRepository.refreshHomeRecommendations()
+                if (ok) onPlayback()
                 return ok
             }
             override suspend fun atr(): Boolean {

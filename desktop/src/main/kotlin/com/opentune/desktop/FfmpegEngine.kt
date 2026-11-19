@@ -3,8 +3,13 @@ package com.opentune.desktop
 import com.opentune.data.settings.AppSettings
 import java.nio.ShortBuffer
 import javax.sound.sampled.AudioFormat
+import kotlin.math.PI
+import kotlin.math.abs
+import kotlin.math.exp
 import kotlin.math.log10
+import kotlin.math.pow
 import kotlin.math.roundToInt
+import kotlin.math.tanh
 import org.bytedeco.ffmpeg.global.avutil
 import org.bytedeco.javacv.FFmpegFrameFilter
 import org.bytedeco.javacv.FFmpegFrameGrabber
@@ -43,6 +48,7 @@ internal class FfmpegEngine(
     private val onEnd: () -> Unit,
     private val onError: (String?) -> Unit,
     private val out: PcmOut = SoundCard(),
+    startImmediately: Boolean = true,
 ) : Engine {
     private val lock = Object()
     @Volatile private var disposed = false
@@ -57,12 +63,19 @@ internal class FfmpegEngine(
     @Volatile private var lineBase = 0L
     @Volatile private var volume = 1.0
     @Volatile private var softGain = 1.0
+    @Volatile private var normalization = 1.0
+    @Volatile private var rateFactor = 1f
+    @Volatile private var bassCut = 0f
     /** Played frames per second of the song: above one when sped up. */
     @Volatile private var speed = 1.0
     /** Set when the sound settings change, so the filters are built again with them. */
     @Volatile private var effectsChanged = false
 
-    private val player = Thread({ run() }, "ffmpeg-play").apply { isDaemon = true; priority = Thread.MAX_PRIORITY; start() }
+    private val player = Thread({ run() }, "ffmpeg-play").apply { isDaemon = true; priority = Thread.MAX_PRIORITY }
+
+    init { if (startImmediately) begin() }
+
+    override fun begin() = player.start()
 
     private fun run() {
         var grabber: FFmpegFrameGrabber? = null
@@ -74,32 +87,38 @@ internal class FfmpegEngine(
             g.audioChannels = 2
             g.setOption("reconnect", "1")
             g.setOption("reconnect_streamed", "1")
+            g.setOption("rw_timeout", "15000000")
             g.start()
             rate = g.sampleRate.takeIf { it > 0 } ?: 48_000
             duration = (g.lengthInTime / 1000).coerceAtLeast(0)
-            onReady(duration)
             val opened = out.open(AudioFormat(rate.toFloat(), 16, 2, true, false))
             if (opened.sampleSizeInBits != 16) throw IllegalStateException("the sound card won't take 16-bit")
             applyVolume()
             if (!paused) out.start()
             filter = effects(rate)
-            val first = startAtMs().takeIf { it > 500 }
+            val first = startAtMs().takeIf { it > 0 }
+                ?.let { if (duration > 0) it.coerceAtMost(duration) else it }
             if (first != null) seekTo(g, first)
+            onReady(duration)
             var at = msToFrame(first ?: 0)
             var emitting = false
             var bytes = ByteArray(0)
+            val low = DoubleArray(2)
             while (!disposed) {
                 if (effectsChanged) {
                     effectsChanged = false
                     filter?.let { f -> runCatching { f.stop(); f.release() } }
+                    runStart = msToFrame(positionMs())
+                    lineBase = out.framePosition
                     filter = effects(rate)
                 }
                 seekRequest?.let { request ->
                     seekRequest = null
+                    val target = if (duration > 0) request.coerceAtMost(duration) else request
                     out.flush()
-                    seekTo(g, request)
+                    seekTo(g, target)
                     filter?.let { f -> runCatching { f.stop(); f.release() }; filter = effects(rate) }
-                    at = msToFrame(request)
+                    at = msToFrame(target)
                     emitting = false
                 }
                 val frame: Frame = g.grabSamples() ?: break
@@ -116,9 +135,22 @@ internal class FfmpegEngine(
                         seekingTo = null
                     }
                     if (bytes.size < count * 2) bytes = ByteArray(count * 2)
-                    val gain = softGain
+                    val volume = softGain
+                    val gain = normalization
+                    val alpha = 1 - exp(-2 * PI * bassCut / rate)
+                    if (alpha == 0.0) low.fill(0.0)
                     for (i in 0 until count) {
-                        val s = if (gain == 1.0) samples.get(i).toInt() else (samples.get(i) * gain).roundToInt().coerceIn(-32768, 32767)
+                        val raw = samples.get(samples.position() + i).toInt()
+                        val s = if (alpha == 0.0 && gain == 1.0 && volume == 1.0) raw else {
+                            val channel = i % 2
+                            low[channel] += alpha * (raw - low[channel])
+                            val scaled = (raw - low[channel]) * gain / 32768.0
+                            // Keep boosts linear below the limiter's knee, with room for transients.
+                            val limited = if (gain > 1.0 && abs(scaled) > 0.90)
+                                Math.copySign(0.90 + 0.10 * tanh((abs(scaled) - 0.90) / 0.10), scaled)
+                            else scaled
+                            (limited * 32768 * volume).roundToInt().coerceIn(-32768, 32767)
+                        }
                         bytes[i * 2] = s.toByte()
                         bytes[i * 2 + 1] = (s shr 8).toByte()
                     }
@@ -153,8 +185,9 @@ internal class FfmpegEngine(
      * nothing, so a plain song goes straight through.
      */
     private fun effects(rate: Int): FFmpegFrameFilter? {
-        val chain = filterChain(AppSettings.sound.value.speed, AppSettings.equalizer.value)
-        speed = AppSettings.sound.value.speed.toDouble().coerceIn(0.5, 2.0)
+        val requested = (AppSettings.sound.value.speed * rateFactor).coerceIn(0.5f, 2f)
+        val chain = filterChain(requested, AppSettings.equalizer.value)
+        speed = requested.toDouble()
         if (chain == null) return null
         return FFmpegFrameFilter(chain, 2).apply {
             sampleFormat = avutil.AV_SAMPLE_FMT_S16
@@ -196,7 +229,6 @@ internal class FfmpegEngine(
     }
 
     override fun seek(ms: Long) {
-        if (rate == 0) return
         val to = if (duration > 0) ms.coerceIn(0, duration) else ms.coerceAtLeast(0)
         seekingTo = to
         seekRequest = to
@@ -205,8 +237,8 @@ internal class FfmpegEngine(
     }
 
     override fun positionMs(): Long {
-        if (rate == 0 || !started) return startAtMs()
         seekingTo?.let { return it }
+        if (rate == 0 || !started) return startAtMs()
         val frames = runStart + ((out.framePosition - lineBase) * speed).toLong()
         return frames * 1000 / rate
     }
@@ -218,6 +250,20 @@ internal class FfmpegEngine(
         effectsChanged = true
     }
 
+    override fun setRateFactor(factor: Float) {
+        if (abs(rateFactor - factor) < 0.005f) return
+        rateFactor = factor
+        refreshEffects()
+    }
+
+    override fun setNormalizationDb(db: Double) {
+        normalization = 10.0.pow(db / 20.0)
+    }
+
+    override fun setBassCut(frequencyHz: Float) {
+        bassCut = frequencyHz
+    }
+
     override fun setVolume(v: Double) {
         volume = v.coerceIn(0.0, 1.0)
         applyVolume()
@@ -227,7 +273,8 @@ internal class FfmpegEngine(
     private fun applyVolume() {
         if (rate == 0) return
         val db = if (volume <= 0.0) -80f else (20 * log10(volume)).toFloat()
-        softGain = if (out.setGainDb(db)) 1.0 else volume
+        val hardware = out.setGainDb(db)
+        softGain = if (hardware && volume > 0.0) 1.0 else volume
     }
 
     override fun dispose() {

@@ -1,6 +1,5 @@
 package com.opentune.cast
 
-import android.annotation.SuppressLint
 import android.os.SystemClock
 import com.opentune.data.DebugLog as Log
 import java.io.ByteArrayOutputStream
@@ -282,7 +281,7 @@ class Chromecast(
      * accepts the device's certificate as it is. It only ever goes to an
      * address found on the local network.
      */
-    @SuppressLint("CustomX509TrustManager", "TrustAllX509TrustManager")
+    @Suppress("CustomX509TrustManager", "TrustAllX509TrustManager")
     private object AcceptDeviceCertificate : X509TrustManager {
         override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) = Unit
         override fun checkServerTrusted(chain: Array<out X509Certificate>?, authType: String?) = Unit

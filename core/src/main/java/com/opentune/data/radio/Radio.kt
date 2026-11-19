@@ -4,6 +4,7 @@ import android.content.Context
 import com.opentune.core.BuildConfig
 import com.opentune.data.DebugLog as Log
 import com.opentune.data.Http
+import com.opentune.data.SavedFile
 import com.opentune.data.model.Song
 import java.io.File
 import java.io.IOException
@@ -13,6 +14,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
@@ -25,6 +27,7 @@ import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.intOrNull
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.Request
 
 /**
@@ -104,41 +107,42 @@ object Radio {
 
     private val json = Json { ignoreUnknownKeys = true }
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private var file: File? = null
+    private var file: SavedFile? = null
+    private val saveLock = Any()
     @Volatile private var server: String? = null
 
     private val _favourites = MutableStateFlow<List<Station>>(emptyList())
     val favourites: StateFlow<List<Station>> = _favourites.asStateFlow()
     private val _recent = MutableStateFlow<List<Station>>(emptyList())
     val recent: StateFlow<List<Station>> = _recent.asStateFlow()
+    private val remembered = MutableStateFlow<List<Station>>(emptyList())
 
     fun init(context: Context) {
-        val f = File(context.filesDir, "radio.json")
+        val f = SavedFile(File(context.filesDir, "radio.json"), TAG)
         file = f
-        runCatching { json.decodeFromString(Saved.serializer(), f.readText()) }.getOrNull()?.let {
-            _favourites.value = it.favourites
-            _recent.value = it.recent
-        }
+        val saved = f.read(Saved()) { json.decodeFromString(Saved.serializer(), it) }
+        _favourites.value = saved.favourites
+        _recent.value = saved.recent
     }
 
     fun isRadio(id: String) = id.startsWith(PREFIX)
 
     /** The stream address for a queued station, from the stations kept on the phone. */
-    fun streamUrl(id: String): String? {
-        val uuid = id.removePrefix(PREFIX)
-        return (_recent.value + _favourites.value).firstOrNull { it.uuid == uuid }?.streamUrl
-    }
+    fun streamUrl(id: String): String? = station(id)?.streamUrl?.takeIf(::isStreamUrl)
 
     fun station(id: String): Station? {
         val uuid = id.removePrefix(PREFIX)
-        return (_favourites.value + _recent.value).firstOrNull { it.uuid == uuid }
+        return (remembered.value + _recent.value + _favourites.value).firstOrNull { it.uuid == uuid }
     }
 
     fun isFavourite(uuid: String) = _favourites.value.any { it.uuid == uuid }
 
     fun setFavourite(station: Station, on: Boolean) {
-        _favourites.value = if (on) listOf(station) + _favourites.value.filterNot { it.uuid == station.uuid }
-        else _favourites.value.filterNot { it.uuid == station.uuid }
+        if (on && !isStreamUrl(station.streamUrl)) return
+        _favourites.update { current ->
+            val rest = current.filterNot { it.uuid == station.uuid }
+            if (on) listOf(station) + rest else rest
+        }
         save()
     }
 
@@ -148,12 +152,20 @@ object Radio {
      * Browser ranks stations by these clicks and asks clients to send them).
      */
     fun played(station: Station) {
-        _recent.value = (listOf(station) + _recent.value.filterNot { it.uuid == station.uuid }).take(MAX_RECENT)
+        if (!rememberStation(station)) return
+        _recent.update { current -> (listOf(station) + current.filterNot { it.uuid == station.uuid }).take(MAX_RECENT) }
         save()
         if (station.custom) return
         scope.launch {
             runCatching { withContext(Dispatchers.IO) { get(url("json/url/${station.uuid}")) } }.onFailure { Log.w(TAG, "click count failed", it) }
         }
+    }
+
+    /** Keeps a station received with a listening-room queue before it is played. */
+    fun rememberStation(station: Station): Boolean {
+        if (!isStreamUrl(station.streamUrl)) return false
+        remembered.update { current -> (listOf(station) + current.filterNot { it.uuid == station.uuid }).take(128) }
+        return true
     }
 
     /** Keeps a station from a stream address someone already has, as a favourite. */
@@ -169,7 +181,7 @@ object Radio {
     }
 
     /** Whether [url] looks like something a station could stream from. */
-    fun isStreamUrl(url: String) = url.trim().let { (it.startsWith("http://") || it.startsWith("https://")) && it.length > 10 && ' ' !in it }
+    fun isStreamUrl(url: String) = url.trim().toHttpUrlOrNull()?.let { it.username.isEmpty() && it.password.isEmpty() } == true
 
     /**
      * Stations listed for a city or state, which catches the ones the
@@ -337,7 +349,7 @@ object Radio {
             val o = e as? JsonObject ?: return@mapNotNull null
             val uuid = o.str("stationuuid") ?: return@mapNotNull null
             val stream = (o.str("url_resolved")?.takeIf { it.isNotBlank() } ?: o.str("url"))
-                ?.takeIf { it.startsWith("http") } ?: return@mapNotNull null
+                ?.takeIf(::isStreamUrl) ?: return@mapNotNull null
             Station(
                 uuid = uuid,
                 name = o.str("name")?.trim()?.takeIf { it.isNotEmpty() } ?: return@mapNotNull null,
@@ -358,15 +370,15 @@ object Radio {
     }
 
     private fun save() {
-        val f = file ?: return
+        scope.launch { flush() }
+    }
+
+    fun flush() = synchronized(saveLock) {
+        val f = file ?: return@synchronized
         val saved = Saved(_favourites.value, _recent.value)
-        scope.launch {
-            runCatching {
-                val tmp = File(f.parentFile, "${f.name}.tmp")
-                tmp.writeText(json.encodeToString(Saved.serializer(), saved))
-                tmp.renameTo(f)
-            }
-        }
+        runCatching { f.write(json.encodeToString(Saved.serializer(), saved)) }
+            .onFailure { Log.w(TAG, "Couldn't save stations", it) }
+        Unit
     }
 
     private fun JsonObject.str(key: String) = (this[key] as? JsonPrimitive)?.contentOrNull

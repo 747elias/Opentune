@@ -225,3 +225,8 @@ jobs:
           if grep -q '^OpenTune: ' "$RUNNER_TEMP/opentune-self-check.log"; then
             grep -E "^OpenTune: Mac OS X .* \($JAVA_ARCH\)$" "$RUNNER_TEMP/opentune-self-check.log"
           fi
+          if grep -q '^macOS MediaPlayer:' "$RUNNER_TEMP/opentune-self-check.log"; then
+            grep -Fx 'macOS MediaPlayer: ok, loaded' "$RUNNER_TEMP/opentune-self-check.log"
+            "$executable" --ui-check | tee "$RUNNER_TEMP/opentune-ui-check.log"
+            grep -Fx 'OpenTune window: ready' "$RUNNER_TEMP/opentune-ui-check.log"
+          fi

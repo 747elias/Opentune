@@ -629,14 +629,14 @@ class PlaybackService : MediaLibraryService() {
             if (fresh.isEmpty()) return@collect
             // A guest's queue mirrors the host's: it asks the host to skip, and changes nothing here.
             if (com.opentune.data.together.Together.room.value?.following == true) {
-                if (player.currentMediaItem?.mediaId in fresh) com.opentune.data.together.Together.intercept(com.opentune.data.together.Together.Control.Next)
+                if (player.currentMediaItem?.mediaId in fresh) com.opentune.data.together.Together.intercept(com.opentune.data.together.RoomProtocol.Control.Next)
                 return@collect
             }
             val current = player.currentMediaItemIndex
             for (i in player.mediaItemCount - 1 downTo current + 1) {
                 if (player.getMediaItemAt(i).mediaId in fresh) player.removeMediaItem(i)
             }
-            if (player.currentMediaItem?.mediaId in fresh && !com.opentune.data.together.Together.intercept(com.opentune.data.together.Together.Control.Next)) {
+            if (player.currentMediaItem?.mediaId in fresh && !com.opentune.data.together.Together.intercept(com.opentune.data.together.RoomProtocol.Control.Next)) {
                 if (player.hasNextMediaItem()) player.seekToNextMediaItem() else player.pause()
             }
         }

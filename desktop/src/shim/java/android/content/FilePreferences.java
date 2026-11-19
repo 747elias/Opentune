@@ -6,6 +6,12 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.nio.file.Files;
+import java.nio.file.LinkOption;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.nio.file.attribute.PosixFileAttributeView;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Properties;
@@ -13,13 +19,18 @@ import java.util.Properties;
 /** [SharedPreferences] kept in a properties file, written whole on every change. */
 final class FilePreferences implements SharedPreferences {
     private final File file;
+    private final boolean privateFile;
     private final Properties values = new Properties();
 
-    FilePreferences(File file) {
+    FilePreferences(File file, boolean privateFile) {
         this.file = file;
+        this.privateFile = privateFile;
         if (file.exists()) {
-            try (InputStream in = new FileInputStream(file)) {
-                values.load(in);
+            try {
+                if (privateFile) restrictAccess(file.toPath());
+                try (InputStream in = new FileInputStream(file)) {
+                    values.load(in);
+                }
             } catch (IOException ignored) {
                 // An unreadable file reads as empty, as a fresh install would.
             }
@@ -90,6 +101,7 @@ final class FilePreferences implements SharedPreferences {
 
     private boolean save() {
         file.getParentFile().mkdirs();
+        if (privateFile) return savePrivate();
         File tmp = new File(file.getParentFile(), file.getName() + ".tmp");
         try (OutputStream out = new FileOutputStream(tmp)) {
             values.store(out, null);
@@ -101,5 +113,33 @@ final class FilePreferences implements SharedPreferences {
             return tmp.renameTo(file);
         }
         return true;
+    }
+
+    private static void restrictAccess(Path path) throws IOException {
+        if (!Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)) {
+            throw new IOException("Expected a regular preferences file");
+        }
+        if (Files.getFileAttributeView(path, PosixFileAttributeView.class) != null) {
+            Files.setPosixFilePermissions(path, PosixFilePermissions.fromString("rw-------"));
+        }
+    }
+
+    private boolean savePrivate() {
+        Path tmp = null;
+        try {
+            tmp = Files.createTempFile(file.getParentFile().toPath(), "account-", ".tmp");
+            restrictAccess(tmp);
+            try (OutputStream out = Files.newOutputStream(tmp)) {
+                values.store(out, null);
+            }
+            Files.move(tmp, file.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+            return true;
+        } catch (IOException e) {
+            return false;
+        } finally {
+            if (tmp != null) {
+                try { Files.deleteIfExists(tmp); } catch (IOException ignored) { }
+            }
+        }
     }
 }

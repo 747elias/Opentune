@@ -390,7 +390,7 @@ private fun PlayerFoot(song: Song, showLyrics: Boolean, onLyrics: (() -> Unit)?)
     val error by Player.error.collectAsState()
     val queue by Player.queue.collectAsState()
     val index by Player.index.collectAsState()
-    val liked by Library.liked.collectAsState()
+    val liked by DesktopAccount.liked.collectAsState(initial = emptyList())
     val quality by Player.quality.collectAsState()
     val ui by AppSettings.ui.collectAsState()
     val progress = rememberProgress(song)
@@ -412,7 +412,7 @@ private fun PlayerFoot(song: Song, showLyrics: Boolean, onLyrics: (() -> Unit)?)
                 }
             }
             Spacer(Modifier.width(10.dp))
-            HeartButton(isLiked) { Library.setLiked(song, !isLiked) }
+            HeartButton(isLiked) { DesktopAccount.setLiked(song, !isLiked) }
             Spacer(Modifier.width(10.dp))
             MoreButton(song)
         }

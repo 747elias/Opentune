@@ -1,5 +1,7 @@
 package com.opentune.desktop
 
+import androidx.compose.material.icons.rounded.Download
+import androidx.compose.material.icons.rounded.FolderOpen
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateDpAsState
@@ -180,6 +182,18 @@ internal fun Sidebar(selected: Any?, folded: Boolean, onPick: (Any) -> Unit) {
             HorizontalDivider(color = divider, modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp))
             // Your playlists by name, scrolling on their own between the pages and Settings.
             LazyColumn(Modifier.weight(1f)) {
+                listOf(Tab.PODCASTS, Tab.RADIO, Tab.ROOMS, Tab.RECOGNIZE).forEach { tab ->
+                    item(key = tab) { SideRow(tab.icon, tab.label, selected == tab, folded) { onPick(tab) } }
+                }
+                item(key = Shelf.DOWNLOADS) {
+                    SideRow(Icons.Rounded.Download, Shelf.DOWNLOADS.label, selected == Shelf.DOWNLOADS, folded) { onPick(Shelf.DOWNLOADS) }
+                }
+                item(key = Shelf.LOCAL) {
+                    SideRow(Icons.Rounded.FolderOpen, Shelf.LOCAL.label, selected == Shelf.LOCAL, folded) { onPick(Shelf.LOCAL) }
+                }
+                item(key = "library-divider") {
+                    HorizontalDivider(color = divider, modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp))
+                }
                 items(playlists, key = { it.id }) { p ->
                     SideRow(Icons.AutoMirrored.Rounded.QueueMusic, p.name, selected == PlaylistKey(p.id), folded) { onPick(PlaylistKey(p.id)) }
                 }
@@ -393,7 +407,7 @@ internal fun RightPanel(panel: SidePanel, song: Song, queue: List<Song>, index: 
 private fun NowPlayingCards(song: Song, queue: List<Song>, index: Int, onLyrics: () -> Unit, onOpenArtist: (ShelfItem) -> Unit) {
     val base = MaterialTheme.colorScheme.surfaceContainer
     val colour = rememberCoverColor(song.thumbnailUrl, base)
-    val liked by Library.liked.collectAsState()
+    val liked by DesktopAccount.liked.collectAsState(initial = emptyList())
     val isLiked = liked.any { it.videoId == song.videoId }
     LazyColumn(
         contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 4.dp, bottom = 32.dp),
@@ -410,7 +424,7 @@ private fun NowPlayingCards(song: Song, queue: List<Song>, index: Int, onLyrics:
                         Text(song.title, color = Color.White, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
                         Text(song.artist, color = Color.White.copy(alpha = 0.75f), style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
-                    LikeButton(isLiked, { Library.setLiked(song, !isLiked) }, idle = Color.White.copy(alpha = 0.8f), size = 22.dp)
+                    LikeButton(isLiked, { DesktopAccount.setLiked(song, !isLiked) }, idle = Color.White.copy(alpha = 0.8f), size = 22.dp)
                 }
             }
         }

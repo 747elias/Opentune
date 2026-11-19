@@ -38,7 +38,7 @@ import com.opentune.data.settings.SoundSettings
 import com.opentune.data.settings.ThemeSettings
 import com.opentune.data.together.Member
 import com.opentune.data.together.RoomCode
-import com.opentune.data.together.Together
+import com.opentune.data.together.RoomProtocol
 import com.opentune.data.together.Track
 import com.opentune.ui.browse.SongActions
 import com.opentune.ui.components.SectionHeader
@@ -224,14 +224,14 @@ class ReadmeScreenshotTest {
     }
 
     @Test fun together() {
-        val room = Together.Room(
-            code = RoomCode.parse("K7QX-M2PA-9DTE")!!, hosting = true, myName = "Asha", phase = Together.Phase.Live, relays = 6,
+        val room = RoomProtocol.Room(
+            code = RoomCode.parse("K7QX-M2PA-9DTE")!!, hosting = true, myName = "Asha", phase = RoomProtocol.Phase.Live, relays = 6,
             members = listOf(Member("a", "Asha", host = true), Member("b", "Ravi"), Member("c", "Meera")),
             hostName = "Asha", track = Track("4NRXx6U8ABQ", "Blinding Lights", "The Weeknd", cover("00")),
             chat = listOf(
-                Together.ChatLine("", "Ravi joined", system = true),
-                Together.ChatLine("Ravi", "this one's a classic"),
-                Together.ChatLine("Asha", "turn it up", mine = true),
+                RoomProtocol.ChatLine("", "Ravi joined", system = true),
+                RoomProtocol.ChatLine("Ravi", "this one's a classic"),
+                RoomProtocol.ChatLine("Asha", "turn it up", mine = true),
             ),
         )
         shoot("together") { RoomView(room, onBack = {}) }

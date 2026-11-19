@@ -30,8 +30,11 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.Favorite
+import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.History
+import androidx.compose.material.icons.rounded.LibraryMusic
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Shuffle
 import androidx.compose.material.icons.rounded.Storage
@@ -100,7 +103,7 @@ internal fun HomePage(onOpen: (ShelfItem) -> Unit, onOpenAny: (Any) -> Unit) {
     var failed by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val recent by Library.recent.collectAsState()
-    val liked by Library.liked.collectAsState()
+    val liked by DesktopAccount.liked.collectAsState(initial = emptyList())
     val history = rememberHistory()
     val moods by produceState(emptyList<MoodGenre>()) { value = runCatching { Pages.moods() }.getOrDefault(emptyList()) }
     fun load() {
@@ -454,7 +457,8 @@ internal fun MixPage(mix: DailyMixes.Mix) {
  */
 @Composable
 internal fun LibraryHome(onShelf: (Shelf) -> Unit, onPlaylist: (String) -> Unit, onOpenAny: (Any) -> Unit) {
-    val liked by Library.liked.collectAsState()
+    val liked by DesktopAccount.liked.collectAsState(initial = emptyList())
+    val localTracks by Library.localTracks.collectAsState()
     val recent by Library.recent.collectAsState()
     val playlists by Library.playlists.collectAsState()
     val server by Subsonic.server.collectAsState()
@@ -472,8 +476,11 @@ internal fun LibraryHome(onShelf: (Shelf) -> Unit, onPlaylist: (String) -> Unit,
         item(key = "shortcuts") {
             HRow(12.dp) {
                 item { Shortcut(Icons.Rounded.Favorite, "Liked songs", songCount(liked.size), heart = true) { onShelf(Shelf.LIKED) } }
+                item { Shortcut(Icons.Rounded.Folder, "Local files", songCount(localTracks.size)) { onShelf(Shelf.LOCAL) } }
+                item { Shortcut(Icons.Rounded.AutoAwesome, "Smart playlists", "Fill from your listening") { onShelf(Shelf.SMART) } }
                 item { Shortcut(Icons.Rounded.History, "Recently played", if (recent.isEmpty()) "Nothing yet" else "${recent.size} songs") { onShelf(Shelf.RECENT) } }
                 if (server != null) item { Shortcut(Icons.Rounded.Storage, "Your server", server!!.url.substringAfter("://").substringBefore('/')) { onShelf(Shelf.SERVER) } }
+                item { Shortcut(Icons.Rounded.LibraryMusic, "YouTube Music", "Account library") { onOpenAny(AccountLibraryKey) } }
                 item { Shortcut(Icons.Rounded.Add, "New playlist", "Start one here") { naming = true } }
             }
         }

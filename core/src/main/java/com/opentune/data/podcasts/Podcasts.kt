@@ -2,6 +2,7 @@ package com.opentune.data.podcasts
 
 import android.content.Context
 import com.opentune.data.DebugLog as Log
+import com.opentune.data.SavedFile
 import com.opentune.data.innertube.Innertube
 import java.io.File
 import kotlinx.coroutines.CoroutineScope
@@ -13,6 +14,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
@@ -29,6 +31,7 @@ object Podcasts {
     private const val SEARCH_SHOWS = "EgWKAQJQAWoKEAkQChAFEAMQBA=="
     private const val SEARCH_EPISODES = "EgWKAQJIAWoKEAkQChAFEAMQBA=="
     private const val MAX_PROGRESS = 300
+    private const val MAX_REGISTERED = 2_000
     /** Resume only past the first half minute, and not in the last. */
     private const val RESUME_MIN_MS = 30_000L
 
@@ -50,7 +53,8 @@ object Podcasts {
 
     private val json = Json { ignoreUnknownKeys = true }
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private var file: File? = null
+    private var file: SavedFile? = null
+    private val saveLock = Any()
 
     private val _subscriptions = MutableStateFlow<List<PodcastShow>>(emptyList())
     val subscriptions: StateFlow<List<PodcastShow>> = _subscriptions.asStateFlow()
@@ -58,12 +62,11 @@ object Podcasts {
     val progress: StateFlow<Map<String, Progress>> = _progress.asStateFlow()
 
     fun init(context: Context) {
-        val f = File(context.filesDir, "podcasts.json")
+        val f = SavedFile(File(context.filesDir, "podcasts.json"), TAG)
         file = f
-        runCatching { json.decodeFromString(Saved.serializer(), f.readText()) }.getOrNull()?.let { s ->
-            _subscriptions.value = s.shows
-            _progress.value = s.progress.associateBy { it.episode.videoId }
-        }
+        val saved = f.read(Saved()) { json.decodeFromString(Saved.serializer(), it) }
+        _subscriptions.value = saved.shows
+        _progress.value = saved.progress.associateBy { it.episode.videoId }
     }
 
     // ---- Subscriptions ------------------------------------------------------
@@ -71,17 +74,33 @@ object Podcasts {
     fun isSubscribed(browseId: String) = _subscriptions.value.any { it.browseId == browseId }
 
     fun setSubscribed(show: PodcastShow, on: Boolean) {
-        _subscriptions.value = if (on) listOf(show.copy(description = null)) + _subscriptions.value.filterNot { it.browseId == show.browseId }
-        else _subscriptions.value.filterNot { it.browseId == show.browseId }
+        _subscriptions.update { current ->
+            val rest = current.filterNot { it.browseId == show.browseId }
+            if (on) listOf(show.copy(description = null)) + rest else rest
+        }
         save()
     }
 
     // ---- Listening position ------------------------------------------------
 
     /** Remembers [episode] as being played from the podcasts pages, so its position is kept. */
-    fun starting(episode: PodcastEpisode) {
-        if (_progress.value.containsKey(episode.videoId)) return
-        _progress.value = _progress.value + (episode.videoId to Progress(episode.copy(description = null), 0, 0, System.currentTimeMillis()))
+    fun starting(episode: PodcastEpisode) = starting(listOf(episode))
+
+    /** Registers the whole queue so each episode keeps its place when played. */
+    fun starting(episodes: List<PodcastEpisode>) {
+        if (episodes.all { it.videoId in _progress.value }) return
+        val now = System.currentTimeMillis()
+        _progress.update { current ->
+            val entries = buildMap {
+                putAll(current)
+                episodes.forEach { episode ->
+                    putIfAbsent(episode.videoId, Progress(episode.copy(description = null), 0, 0, now))
+                }
+            }
+            val pending = entries.filterValues { it.positionMs == 0L && !it.finished }.entries
+            entries.filterValues { it.positionMs > 0L || it.finished } +
+                pending.sortedByDescending { it.value.updatedAt }.take(MAX_REGISTERED).associate { it.toPair() }
+        }
         save()
     }
 
@@ -96,16 +115,30 @@ object Podcasts {
     }
 
     fun savePosition(videoId: String, positionMs: Long, durationMs: Long) {
-        val p = _progress.value[videoId] ?: return
-        val finished = durationMs > 0 && positionMs >= durationMs - RESUME_MIN_MS
-        _progress.value = (_progress.value + (videoId to p.copy(positionMs = positionMs, durationMs = durationMs.coerceAtLeast(p.durationMs), updatedAt = System.currentTimeMillis(), finished = finished)))
-            .entries.sortedByDescending { it.value.updatedAt }.take(MAX_PROGRESS).associate { it.toPair() }
+        if (videoId !in _progress.value || positionMs < 0 || durationMs <= 0) return
+        val now = System.currentTimeMillis()
+        _progress.update { current ->
+            val p = current[videoId] ?: return@update current
+            val at = positionMs.coerceAtMost(durationMs)
+            val finished = at >= durationMs - minOf(RESUME_MIN_MS, durationMs / 10)
+            val updated = p.copy(positionMs = at, durationMs = durationMs, updatedAt = now, finished = finished)
+            // Keep registrations for episodes in the queue. Only listened or explicitly marked
+            // episodes need a bounded history; entries with no position contain no listening data.
+            val entries = current + (videoId to updated)
+            val saved = entries.filterValues { it.positionMs > 0 || it.finished }
+            entries.filterValues { it.positionMs == 0L && !it.finished } +
+                saved.entries.sortedByDescending { it.value.updatedAt }.take(MAX_PROGRESS).associate { it.toPair() }
+        }
         save()
     }
 
     fun markPlayed(videoId: String, played: Boolean) {
-        val p = _progress.value[videoId] ?: return
-        _progress.value = _progress.value + (videoId to p.copy(finished = played, positionMs = if (played) p.positionMs else 0, updatedAt = System.currentTimeMillis()))
+        if (videoId !in _progress.value) return
+        val now = System.currentTimeMillis()
+        _progress.update { current ->
+            val p = current[videoId] ?: return@update current
+            current + (videoId to p.copy(finished = played, positionMs = if (played) p.positionMs else 0, updatedAt = now))
+        }
         save()
     }
 
@@ -169,15 +202,18 @@ object Podcasts {
         }.awaitAll().flatten()
     }
 
+    fun flush() = synchronized(saveLock) {
+        val f = file ?: return@synchronized
+        val entries = _progress.value.values.sortedByDescending { it.updatedAt }
+        val listened = entries.filter { it.positionMs > 0 || it.finished }.take(MAX_PROGRESS)
+        val queued = entries.filter { it.positionMs == 0L && !it.finished }.take(MAX_REGISTERED)
+        val saved = Saved(_subscriptions.value, listened + queued)
+        runCatching { f.write(json.encodeToString(Saved.serializer(), saved)) }
+            .onFailure { Log.w(TAG, "Couldn't save podcasts", it) }
+        Unit
+    }
+
     private fun save() {
-        val f = file ?: return
-        val saved = Saved(_subscriptions.value, _progress.value.values.toList())
-        scope.launch {
-            runCatching {
-                val tmp = File(f.parentFile, "${f.name}.tmp")
-                tmp.writeText(json.encodeToString(Saved.serializer(), saved))
-                tmp.renameTo(f)
-            }
-        }
+        scope.launch { flush() }
     }
 }

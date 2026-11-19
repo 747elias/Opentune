@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import com.opentune.data.lyrics.Lyrics
 import com.opentune.data.lyrics.LyricsRepository
 import com.opentune.data.model.Song
+import com.opentune.data.together.RoomProtocol
 import com.opentune.data.together.Together
 import com.opentune.playback.PlayerConnection
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -228,10 +229,10 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
     fun playNext(song: Song) { if (!toRoom(song)) player.playNext(song) }
     fun addToQueue(song: Song) { if (!toRoom(song)) player.addToQueue(song) }
     // In someone else's room these go to the host instead (see Together.intercept).
-    fun togglePlayPause() { if (!Together.intercept(Together.Control.PlayPause)) player.togglePlayPause() }
+    fun togglePlayPause() { if (!Together.intercept(RoomProtocol.Control.PlayPause)) player.togglePlayPause() }
     fun dismiss() = player.dismiss()
-    fun skipNext() { if (!Together.intercept(Together.Control.Next)) player.skipNext() }
-    fun skipPrevious() { if (!Together.intercept(Together.Control.Previous)) player.skipPrevious() }
+    fun skipNext() { if (!Together.intercept(RoomProtocol.Control.Next)) player.skipNext() }
+    fun skipPrevious() { if (!Together.intercept(RoomProtocol.Control.Previous)) player.skipPrevious() }
     fun toggleShuffle() = player.toggleShuffle()
     /** Off, shuffle, then smart shuffle for a queue from a list; returns the new mode. */
     fun cycleShuffle(): com.opentune.playback.ShuffleMode = player.cycleShuffle()
@@ -241,7 +242,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
     fun moveQueueItem(from: Int, to: Int) = player.moveQueueItem(from, to)
     /** A song on its own; the service follows it with radio. */
     fun startRadio(song: Song) { if (!toRoom(song)) player.play(song, com.opentune.i18n.Tr.f("{0} radio", song.title)) }
-    fun seekTo(positionMs: Long) { if (!Together.intercept(Together.Control.Seek(positionMs))) player.seekTo(positionMs) }
+    fun seekTo(positionMs: Long) { if (!Together.intercept(RoomProtocol.Control.Seek(positionMs))) player.seekTo(positionMs) }
     fun positionMs(): Long = player.currentPositionMs()
     fun bufferedPositionMs(): Long = player.bufferedPositionMs()
 

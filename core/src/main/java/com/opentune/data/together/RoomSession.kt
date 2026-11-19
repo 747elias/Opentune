@@ -3,11 +3,10 @@ package com.opentune.data.together
 import com.opentune.data.DebugLog as Log
 import com.opentune.data.model.Song
 import com.opentune.data.radio.Radio
-import com.opentune.data.together.Together.ChatLine
-import com.opentune.data.together.Together.Control
-import com.opentune.data.together.Together.Phase
-import com.opentune.data.together.Together.Room
-import com.opentune.playback.PlayerConnection
+import com.opentune.data.together.RoomProtocol.ChatLine
+import com.opentune.data.together.RoomProtocol.Control
+import com.opentune.data.together.RoomProtocol.Phase
+import com.opentune.data.together.RoomProtocol.Room
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -50,35 +49,6 @@ internal interface RoomPlayer {
     fun playNow(song: Song)
     fun skipNext()
     fun skipPrevious()
-}
-
-/** The app's player, as a room sees it. */
-internal class ConnectionPlayer(private val c: PlayerConnection) : RoomPlayer {
-    override val connected get() = c.connected
-    override val currentSong get() = c.currentSong
-    override val queue get() = c.queue
-    override val upNext get() = c.upNext
-    override val currentIndex get() = c.currentIndex
-    override val playWhenReady get() = c.playWhenReady
-    override val isBuffering get() = c.isBuffering
-    override val seeks get() = c.seeks
-    override fun currentPositionMs() = c.currentPositionMs()
-    override fun setRate(rate: Float) = c.setSyncRate(rate)
-    override fun play() = c.play()
-    override fun pause() = c.pause()
-    override fun seekTo(positionMs: Long) = c.seekTo(positionMs)
-    override fun seekToItem(index: Int, positionMs: Long) = c.seekToItem(index, positionMs)
-    override fun playAll(songs: List<Song>, startIndex: Int, shuffle: Boolean, source: String?, startPositionMs: Long) =
-        // The room's queue, not a list of the listener's own: smart shuffle stays out of it.
-        c.playAll(songs, startIndex, shuffle, source, startPositionMs, fromList = false)
-    override fun replaceUpcoming(songs: List<Song>) = c.replaceUpcoming(songs)
-    override fun addToQueue(song: Song) = c.addToQueue(song)
-    override fun playNow(song: Song) {
-        c.playNext(song)
-        c.skipNext()
-    }
-    override fun skipNext() = c.skipNext()
-    override fun skipPrevious() = c.skipPrevious()
 }
 
 /** Where a room's events go and come from; the relays in the app. */
@@ -221,7 +191,7 @@ internal class RoomSession(
                 val text = Msg.encode(m)
                 // A guest not yet let in has no room key, and nothing to say in the room.
                 val content = if (Msg.inLobby(m)) code.seal(text) else roomKey?.seal(text) ?: continue
-                val event = NostrEvent.signed(key, Together.KIND, listOf(listOf("t", code.tag)), content)
+                val event = NostrEvent.signed(key, RoomProtocol.KIND, listOf(listOf("t", code.tag)), content)
                 if (!pool.publish(event)) Log.w(TAG, "no relay connected for ${m::class.simpleName}")
             }
         }
@@ -603,7 +573,7 @@ internal class RoomSession(
         if (current != track.id) {
             if (!fresh && now < settleUntil) return
             track.station?.let(Radio::played)
-            s.next.forEach { t -> t.station?.let(Radio::played) }
+            s.next.forEach { t -> t.station?.let(Radio::rememberStation) }
             setRate(1f)
             val start = if (s.playing) target + seekLead else target
             val index = p.queue.value.indexOfFirst { it.videoId == track.id }
@@ -616,7 +586,10 @@ internal class RoomSession(
         }
         // Same song: keep what comes next the same, so the next song starts in step too.
         val after = p.upNext.value.mapNotNull { p.queue.value.getOrNull(it)?.videoId }
-        if (fresh && after.take(s.next.size) != s.next.map { it.id }) p.replaceUpcoming(s.next.map { it.toSong() })
+        if (fresh && after != s.next.map { it.id }) {
+            s.next.forEach { t -> t.station?.let(Radio::rememberStation) }
+            p.replaceUpcoming(s.next.map { it.toSong() })
+        }
         if (holding) {
             setRate(1f)
             return
@@ -801,7 +774,7 @@ internal class RoomSession(
     }
 
     private fun showClip(id: String, name: String, from: String, cfg: ByteArray?, frames: List<ByteArray>, ms: Long, complete: Boolean, live: Boolean, mine: Boolean) {
-        val clip = Together.VoiceClip(id, cfg, frames, ms, complete, live)
+        val clip = RoomProtocol.VoiceClip(id, cfg, frames, ms, complete, live)
         update { r ->
             val i = r.chat.indexOfFirst { it.voice?.id == id }
             val line = ChatLine(name, "", mine = mine, fromId = from, voice = clip)

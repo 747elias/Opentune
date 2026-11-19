@@ -234,7 +234,15 @@ object LastFmDesktop {
         }
     }
 
-    private class Listening(val id: String, val meta: Scrobble, var heard: Double = 0.0, var announced: Boolean = false, var done: Boolean = false)
+    private class Listening(
+        val id: String,
+        val meta: Scrobble,
+        var heard: Double = 0.0,
+        var announced: Boolean = false,
+        var done: Boolean = false,
+        var brainzAnnounced: Boolean = false,
+        var brainzDone: Boolean = false,
+    )
 
     /**
      * Follows the player once a second: counts the seconds of each song actually
@@ -250,7 +258,12 @@ object LastFmDesktop {
                 delay(1_000)
                 val s = _state.value
                 val song = Player.current
-                if (s.session == null || !s.scrobbling || song == null) { current = null; continue }
+                val lastFmConnected = s.session != null && s.scrobbling
+                val brainzConnected = com.opentune.data.listenbrainz.ListenBrainz.account.value != null
+                if (song == null || !(lastFmConnected || brainzConnected) || com.opentune.data.settings.AppSettings.playback.value.pauseListeningHistory) {
+                    current = null
+                    continue
+                }
                 val position = Player.positionMs() / 1000.0
                 val restarted = current?.id == song.videoId && position + 2 < last && position < 3
                 if (current?.id != song.videoId || restarted) {
@@ -267,11 +280,21 @@ object LastFmDesktop {
                 if (Player.playing.value) {
                     val step = position - last
                     if (step > 0 && step < 3) listening.heard += step
-                    if (!listening.announced) { listening.announced = true; nowPlaying(listening.meta) }
-                    if (!listening.done && isListen(listening.heard, listening.meta.durationS?.toDouble() ?: 0.0)) {
+                    if (lastFmConnected && !listening.announced) { listening.announced = true; nowPlaying(listening.meta) }
+                    val duration = Player.durationMs().takeIf { it > 0 } ?: ((listening.meta.durationS ?: 0) * 1000)
+                    if (brainzConnected && !listening.brainzAnnounced) {
+                        listening.brainzAnnounced = true
+                        com.opentune.data.listenbrainz.ListenBrainz.playingNow(song, duration)
+                    }
+                    val qualifies = isListen(listening.heard, duration / 1000.0)
+                    if (lastFmConnected && !listening.done && qualifies) {
                         listening.done = true
                         update { it.copy(queue = (it.queue + listening.meta).takeLast(MAX_QUEUED)) }
                         flush()
+                    }
+                    if (brainzConnected && !listening.brainzDone && qualifies) {
+                        listening.brainzDone = true
+                        com.opentune.data.listenbrainz.ListenBrainz.listened(song, listening.meta.timestamp * 1000, duration)
                     }
                 }
                 last = position
