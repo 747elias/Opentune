@@ -216,6 +216,9 @@ jobs:
           test "$(readlink "$mount/Applications")" = /Applications
           app="$mount/OpenTune.app"
           executable="$app/Contents/MacOS/OpenTune"
+          test -z "$(find "$app" -type d ! -perm -005 -print -quit)"
+          test -z "$(find "$app" -type f ! -perm -004 -print -quit)"
+          test -z "$(find "$executable" ! -perm -001 -print -quit)"
           lipo "$executable" -verify_arch arm64 x86_64
           codesign --verify --deep --strict "$app"
           "$executable" --self-check | tee "$RUNNER_TEMP/opentune-self-check.log"

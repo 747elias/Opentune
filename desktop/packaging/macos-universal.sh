@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Package two native Compose/jpackage app images into one macOS disk image.
 set -euo pipefail
+# Applications installed in /Applications must be readable by other accounts.
+umask 022
 
 if [[ $# -ne 3 ]]; then
     echo "Usage: $0 <arm64/OpenTune.app> <x86_64/OpenTune.app> <output.dmg>" >&2
