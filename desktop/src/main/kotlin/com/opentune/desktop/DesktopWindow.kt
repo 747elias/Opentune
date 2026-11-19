@@ -4,6 +4,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.drag
+import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.hoverable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsHoveredAsState
@@ -22,6 +23,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.input.pointer.PointerIcon
+import androidx.compose.ui.input.pointer.PointerType
+import androidx.compose.ui.input.pointer.isPrimaryPressed
+import androidx.compose.ui.input.pointer.isSecondaryPressed
 import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.semantics.contentDescription
@@ -70,8 +74,8 @@ object DesktopWindow {
 }
 
 /**
- * Empty title bar: dragging it moves the window, a double click zooms it, as a
- * system title bar does. Put it behind a bar's content, not around it, so the
+ * Empty title bar: drag to move it, double-click to maximise or restore it, and
+ * right-click for the system menu. Put it behind a bar's content so the
  * buttons and sliders on the bar take their own presses and only the empty
  * parts reach here. Nothing, where the system draws the title bar.
  */
@@ -80,6 +84,16 @@ internal fun Modifier.windowDrag(): Modifier = if (!DesktopWindow.drawsFrame) th
     var lastWhere = Offset.Zero
     awaitEachGesture {
         val down = awaitFirstDown()
+        if (down.type == PointerType.Mouse && !currentEvent.buttons.isPrimaryPressed) {
+            lastAt = 0L
+            if (currentEvent.buttons.isSecondaryPressed) {
+                down.consume()
+                val up = waitForUpOrCancellation() ?: return@awaitEachGesture
+                up.consume()
+                WindowsFrame.showSystemMenu()
+            }
+            return@awaitEachGesture
+        }
         val twice = down.uptimeMillis - lastAt <= viewConfiguration.doubleTapTimeoutMillis &&
             (down.position - lastWhere).getDistance() <= viewConfiguration.touchSlop
         if (twice) {

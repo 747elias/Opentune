@@ -223,6 +223,49 @@ jobs:
           ./gradlew --no-daemon :desktop:createDistributable
           app=desktop/build/compose/binaries/main/app
           if [ -d "$app/OpenTune.app" ]; then "$app/OpenTune.app/Contents/MacOS/OpenTune" --self-check; else "$app/OpenTune/bin/OpenTune" --self-check; fi
+      - name: Install and test the Windows setup
+        if: runner.os == 'Windows'
+        shell: pwsh
+        timeout-minutes: 10
+        run: |
+          $installers = @(Get-ChildItem desktop/build/compose/binaries/main/exe -Filter '*.exe' -File)
+          if ($installers.Count -ne 1) { throw "Expected one installer, found $($installers.Count)." }
+          $setup = Join-Path $env:RUNNER_TEMP 'OpenTune-windows-x64-setup.exe'
+          Copy-Item -LiteralPath $installers[0].FullName -Destination $setup
+
+          $installLog = Join-Path $env:RUNNER_TEMP 'OpenTune-install.log'
+          $installArgs = @('/quiet', '/norestart', '/L*v', ('"{0}"' -f $installLog))
+          $install = Start-Process -FilePath $setup -ArgumentList $installArgs -Wait -PassThru
+          if ($install.ExitCode -ne 0) {
+            if (Test-Path -LiteralPath $installLog) { Get-Content -LiteralPath $installLog -Tail 120 }
+            throw "OpenTune setup exited with code $($install.ExitCode)."
+          }
+
+          $launcher = Join-Path $env:ProgramFiles 'OpenTune/OpenTune.exe'
+          $report = Join-Path $env:RUNNER_TEMP 'OpenTune-self-check.txt'
+          $checkArgs = @('--self-check', ('"--self-check-report={0}"' -f $report))
+          $check = Start-Process -FilePath $launcher -ArgumentList $checkArgs -Wait -PassThru
+          if (Test-Path -LiteralPath $report) { Get-Content -LiteralPath $report }
+          if ($check.ExitCode -ne 0 -or !(Test-Path -LiteralPath $report -PathType Leaf)) {
+            throw "Installed OpenTune self-check failed (exit code $($check.ExitCode))."
+          }
+      - name: Upload the Windows setup file
+        if: runner.os == 'Windows'
+        id: windows-setup
+        uses: actions/upload-artifact@v7
+        with:
+          path: ${{ runner.temp }}/OpenTune-windows-x64-setup.exe
+          archive: false
+          if-no-files-found: error
+      - name: Link the Windows setup
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          ARTIFACT_URL: ${{ steps.windows-setup.outputs.artifact-url }}
+          ARTIFACT_DIGEST: ${{ steps.windows-setup.outputs.artifact-digest }}
+        run: |
+          "[Download OpenTune for Windows x64 (.exe)]($env:ARTIFACT_URL)" >> $env:GITHUB_STEP_SUMMARY
+          "SHA-256: $env:ARTIFACT_DIGEST" >> $env:GITHUB_STEP_SUMMARY
       # One file that runs on any Linux after chmod +x, wrapped around the app image just checked.
       - name: AppImage
         if: runner.os == 'Linux'
