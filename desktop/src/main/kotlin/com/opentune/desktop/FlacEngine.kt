@@ -16,8 +16,9 @@ import org.jflac.FLACDecoder
 import org.jflac.io.RandomFileInputStream
 import org.jflac.metadata.StreamInfo
 
-/** A song playing, whichever way: JavaFX for YouTube, JioSaavn and servers, [FlacEngine] for lossless files. */
+/** A song playing through one of the desktop audio engines. */
 internal interface Engine {
+    fun start()
     fun play()
     fun pause()
     fun seek(ms: Long)
@@ -45,13 +46,22 @@ internal interface PcmOut {
     fun setGainDb(db: Float): Boolean
 }
 
-/** The computer's default output, through Java Sound, at the song's own rate and depth when it takes them. */
+/** The computer's default output, at the song's own rate and depth when it takes them. */
 internal class SoundCard : PcmOut {
+    @Volatile private var pulse: PulseAudioOut? = null
     private var line: SourceDataLine? = null
 
     override fun open(format: AudioFormat): AudioFormat {
-        val tries = listOf(format, AudioFormat(format.sampleRate, 16, format.channels, true, false)).distinct()
         var last: Exception? = null
+        PulseAudioOut.create()?.let { output ->
+            try {
+                return output.open(format).also { pulse = output }
+            } catch (e: Exception) {
+                output.close()
+                last = e
+            }
+        }
+        val tries = listOf(format, AudioFormat(format.sampleRate, 16, format.channels, true, false)).distinct()
         for (f in tries) {
             try {
                 val l = AudioSystem.getLine(DataLine.Info(SourceDataLine::class.java, f)) as SourceDataLine
@@ -66,13 +76,13 @@ internal class SoundCard : PcmOut {
         throw IOException("The sound card won't play ${format.sampleRate.toInt()} Hz: ${last?.message}")
     }
 
-    override fun write(bytes: ByteArray, off: Int, len: Int) = line?.write(bytes, off, len) ?: 0
-    override fun start() { line?.start() }
-    override fun stop() { line?.stop() }
-    override fun flush() { line?.flush() }
-    override fun drain() { line?.drain() }
-    override fun close() { line?.close() }
-    override val framePosition: Long get() = line?.longFramePosition ?: 0
+    override fun write(bytes: ByteArray, off: Int, len: Int) = pulse?.write(bytes, off, len) ?: line?.write(bytes, off, len) ?: 0
+    override fun start() { pulse?.start() ?: line?.start() }
+    override fun stop() { pulse?.stop() ?: line?.stop() }
+    override fun flush() { pulse?.flush() ?: line?.flush() }
+    override fun drain() { pulse?.drain() ?: line?.drain() }
+    override fun close() { pulse?.close() ?: line?.close() }
+    override val framePosition: Long get() = pulse?.framePosition ?: line?.longFramePosition ?: 0
 
     override fun setGainDb(db: Float): Boolean {
         val gain = line?.takeIf { it.isControlSupported(FloatControl.Type.MASTER_GAIN) }?.getControl(FloatControl.Type.MASTER_GAIN) as? FloatControl
@@ -126,8 +136,17 @@ internal class FlacEngine(
     @Volatile var output: AudioFormat? = null
         private set
 
-    private val download = Thread({ fetch() }, "flac-download").apply { isDaemon = true; start() }
-    private val player = Thread({ run() }, "flac-play").apply { isDaemon = true; priority = Thread.MAX_PRIORITY; start() }
+    private val download = Thread({ fetch() }, "flac-download").apply { isDaemon = true }
+    private val player = Thread({ run() }, "flac-play").apply { isDaemon = true; priority = Thread.MAX_PRIORITY }
+
+    override fun start() {
+        if (disposed) {
+            file.delete()
+            return
+        }
+        download.start()
+        player.start()
+    }
 
     /** Whether the whole file is saved, so a seek anywhere is immediate. */
     internal val arrivedAll: Boolean get() = complete
@@ -136,6 +155,7 @@ internal class FlacEngine(
     val bits: Int get() = info?.bitsPerSample ?: 0
 
     private fun fetch() {
+        if (disposed) return
         try {
             source().use { stream ->
                 RandomAccessFile(file, "rw").use { raf ->

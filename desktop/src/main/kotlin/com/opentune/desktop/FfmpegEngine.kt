@@ -1,6 +1,7 @@
 package com.opentune.desktop
 
 import com.opentune.data.settings.AppSettings
+import java.io.Closeable
 import java.nio.ShortBuffer
 import javax.sound.sampled.AudioFormat
 import kotlin.math.log10
@@ -43,6 +44,8 @@ internal class FfmpegEngine(
     private val onEnd: () -> Unit,
     private val onError: (String?) -> Unit,
     private val out: PcmOut = SoundCard(),
+    private val input: Closeable? = null,
+    private val local: Boolean = false,
 ) : Engine {
     private val lock = Object()
     @Volatile private var disposed = false
@@ -52,6 +55,8 @@ internal class FfmpegEngine(
     @Volatile private var started = false
     @Volatile private var rate = 0
     @Volatile private var duration = 0L
+    @Volatile var codec: String? = null
+        private set
     /** Where the current run started, in frames, and the line's position then. */
     @Volatile private var runStart = 0L
     @Volatile private var lineBase = 0L
@@ -62,19 +67,26 @@ internal class FfmpegEngine(
     /** Set when the sound settings change, so the filters are built again with them. */
     @Volatile private var effectsChanged = false
 
-    private val player = Thread({ run() }, "ffmpeg-play").apply { isDaemon = true; priority = Thread.MAX_PRIORITY; start() }
+    override fun start() {
+        Thread({ run() }, "ffmpeg-play").apply { isDaemon = true; priority = Thread.MAX_PRIORITY; start() }
+    }
 
     private fun run() {
         var grabber: FFmpegFrameGrabber? = null
         var filter: FFmpegFrameFilter? = null
         try {
+            if (disposed) return
             if (!Ffmpeg.available) throw IllegalStateException("FFmpeg isn't available")
             val g = FFmpegFrameGrabber(address).also { grabber = it }
             g.sampleMode = FrameGrabber.SampleMode.SHORT
             g.audioChannels = 2
             g.setOption("reconnect", "1")
             g.setOption("reconnect_streamed", "1")
+            g.setOption("rw_timeout", "30000000")
+            if (local) g.setOption("protocol_whitelist", "file") else g.setOption("http_proxy", "")
             g.start()
+            if (disposed) return
+            codec = g.audioCodecName?.takeIf { it.isNotBlank() }
             rate = g.sampleRate.takeIf { it > 0 } ?: 48_000
             duration = (g.lengthInTime / 1000).coerceAtLeast(0)
             onReady(duration)
@@ -141,6 +153,7 @@ internal class FfmpegEngine(
             runCatching { filter?.stop(); filter?.release() }
             runCatching { grabber?.stop(); grabber?.release() }
             out.close()
+            input?.close()
         }
     }
 
@@ -232,6 +245,7 @@ internal class FfmpegEngine(
 
     override fun dispose() {
         disposed = true
+        input?.close()
         out.stop()
         out.flush()
         synchronized(lock) { lock.notifyAll() }

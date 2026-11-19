@@ -1,6 +1,9 @@
 package com.opentune.desktop
 
+import com.sun.net.httpserver.HttpServer
 import java.io.ByteArrayOutputStream
+import java.net.InetSocketAddress
+import java.net.URI
 import java.nio.ShortBuffer
 import java.nio.file.Files
 import java.util.concurrent.CountDownLatch
@@ -20,7 +23,7 @@ class MediaTest {
     @Test fun ffmpegPlaysAnOpusFileToTheEnd() {
         assertTrue("FFmpeg should load", Ffmpeg.available)
         // Two seconds of a 440 Hz tone, encoded to Opus in WebM, YouTube's best audio format.
-        val file = Files.createTempFile("tone", ".webm").toFile().apply { deleteOnExit() }
+        val file = Files.createTempFile("tone #ä ", ".webm").toFile().apply { deleteOnExit() }
         FFmpegFrameRecorder(file, 2).apply {
             format = "webm"
             audioCodec = avcodec.AV_CODEC_ID_OPUS
@@ -44,8 +47,9 @@ class MediaTest {
         val engine = FfmpegEngine(
             file.absolutePath, startAtMs = { 0 }, autoplay = true,
             onReady = { length = it }, onStarted = {}, onPlaying = {},
-            onEnd = { ended.countDown() }, onError = { problem = it; ended.countDown() }, out = out,
+            onEnd = { ended.countDown() }, onError = { problem = it; ended.countDown() }, out = out, local = true,
         )
+        engine.start()
         assertTrue("it should reach the end", ended.await(20, TimeUnit.SECONDS))
         engine.dispose()
         assertEquals(null, problem)
@@ -71,6 +75,50 @@ class MediaTest {
             JavaScript.compileOrThrow("function (")
             fail("broken code should be refused")
         } catch (expected: RuntimeException) {
+        }
+    }
+
+    @Test fun directStreamsForwardRangesAndExpireWhenClosed() {
+        val bytes = ByteArray(128) { it.toByte() }
+        val upstream = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        upstream.createContext("/audio") { exchange ->
+            try {
+                if (exchange.requestURI.rawQuery != "token=private" || exchange.requestHeaders.getFirst("Range") != "bytes=10-19") {
+                    exchange.sendResponseHeaders(400, -1)
+                } else {
+                    exchange.responseHeaders.set("Content-Type", "audio/mp4")
+                    exchange.responseHeaders.set("Content-Range", "bytes 10-19/128")
+                    exchange.sendResponseHeaders(206, 10)
+                    exchange.responseBody.write(bytes, 10, 10)
+                }
+            } finally {
+                exchange.close()
+            }
+        }
+        upstream.start()
+        try {
+            val stream = Relay.direct("http://127.0.0.1:${upstream.address.port}/audio?token=private")
+            val url = URI(stream.address).toURL()
+            stream.use {
+                assertEquals(null, url.query)
+                val response = url.openConnection(java.net.Proxy.NO_PROXY) as java.net.HttpURLConnection
+                try {
+                    response.setRequestProperty("Range", "bytes=10-19")
+                    assertEquals(206, response.responseCode)
+                    assertEquals("bytes 10-19/128", response.getHeaderField("Content-Range"))
+                    org.junit.Assert.assertArrayEquals(bytes.copyOfRange(10, 20), response.inputStream.use { it.readBytes() })
+                } finally {
+                    response.disconnect()
+                }
+            }
+            val expired = url.openConnection(java.net.Proxy.NO_PROXY) as java.net.HttpURLConnection
+            try {
+                assertEquals(404, expired.responseCode)
+            } finally {
+                expired.disconnect()
+            }
+        } finally {
+            upstream.stop(0)
         }
     }
 

@@ -22,18 +22,21 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.Request
+import java.util.Locale
 
 /**
- * The queue and the song playing. A song starts from YouTube (or your own
- * server) through JavaFX's media player, as it always has; meanwhile the
+ * The queue and the song playing. A song starts from a local file, YouTube or your own
+ * server; meanwhile the
  * audio sources are asked for something better, as on the phone: a verified
  * FLAC from an add-on, played bit for bit by [FlacEngine], or JioSaavn's
  * 320 kbps AAC. Whichever answers takes over at the same moment in the song,
@@ -44,6 +47,7 @@ import okhttp3.Request
  */
 object Player {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val isLinux = System.getProperty("os.name").orEmpty().equals("Linux", ignoreCase = true)
 
     /** When the sleep timer stops playback: at a time, or when the song ends. */
     sealed interface Sleep {
@@ -63,6 +67,8 @@ object Player {
     val index: StateFlow<Int> = _index.asStateFlow()
     private val _playing = MutableStateFlow(false)
     val playing: StateFlow<Boolean> = _playing.asStateFlow()
+    private val _stopped = MutableStateFlow(false)
+    internal val stopped = _stopped.asStateFlow()
     private val _loading = MutableStateFlow(false)
     val loading: StateFlow<Boolean> = _loading.asStateFlow()
     private val _error = MutableStateFlow<String?>(null)
@@ -75,6 +81,8 @@ object Player {
     /** The song's id and its exact length once the player knows it, for lyrics to match on. */
     private val _durationOf = MutableStateFlow("" to 0L)
     val durationOf: StateFlow<Pair<String, Long>> = _durationOf.asStateFlow()
+    private val _seeks = MutableSharedFlow<Long>(extraBufferCapacity = 1)
+    internal val seeks = _seeks.asSharedFlow()
 
     val current: Song? get() = _queue.value.getOrNull(_index.value)
 
@@ -85,7 +93,9 @@ object Player {
     /** The queue's order before shuffling, to go back to. */
     private var unshuffled: List<Song>? = null
 
-    fun cycleRepeat() { _repeat.value = _repeat.value.next() }
+    fun cycleRepeat() = setRepeat(_repeat.value.next())
+
+    internal fun setRepeat(mode: Repeat) { _repeat.value = mode }
 
     /** Shuffles what's after the song playing, or puts the queue back in its order. */
     fun toggleShuffle() {
@@ -170,10 +180,30 @@ object Player {
 
     fun toggle() {
         val e = synchronized(gate) { engine } ?: return current?.let { open(_index.value) } ?: Unit
-        wanted = !wanted
-        if (wanted) e.play() else e.pause()
-        synchronized(gate) { incoming }?.let { if (wanted) it.play() else it.pause() }
-        _playing.value = wanted
+        if (wanted) pauseAll() else resume(e)
+    }
+
+    internal fun play() {
+        val e = synchronized(gate) { engine }
+        if (e == null || _error.value != null) {
+            if (!_loading.value) open(_index.value)
+        } else if (!wanted) resume(e)
+    }
+
+    private fun resume(e: Engine) {
+        wanted = true
+        _stopped.value = false
+        e.play()
+        synchronized(gate) { incoming }?.play()
+        _playing.value = true
+    }
+
+    internal fun pause() = pauseAll()
+
+    internal fun stop() {
+        pauseAll()
+        seekTo(0)
+        _stopped.value = true
     }
 
     private fun pauseAll() {
@@ -242,7 +272,9 @@ object Player {
     }
 
     fun seekTo(ms: Long) {
-        synchronized(gate) { engine }?.seek(ms)
+        val e = synchronized(gate) { engine } ?: return
+        e.seek(ms)
+        _seeks.tryEmit(ms)
     }
 
     fun setVolume(v: Double) {
@@ -261,6 +293,7 @@ object Player {
         _loading.value = true
         _quality.value = null
         wanted = true
+        _stopped.value = false
         _playing.value = false
         Library.played(song)
         val gen = synchronized(gate) {
@@ -281,76 +314,66 @@ object Player {
 
     // ---- The song's first source -------------------------------------------------
 
-    /**
-     * YouTube through the relay, or your server's MP3: what every song starts
-     * from. A YouTube song plays YouTube's Opus stream through FFmpeg where
-     * FFmpeg loads, and its AAC stream through JavaFX if that fails.
-     */
-    private fun startBase(song: Song, gen: Int, atMs: Long = 0, opus: Boolean = isYouTubeId(song.videoId) && Ffmpeg.available) {
-        if (opus) return startOpus(song, gen, atMs)
-        val address = addressOf(song.videoId) ?: return fail(song, gen)
-        lateinit var e: FxEngine
-        e = FxEngine(
-            address, startAtMs = { atMs }, autoplay = wanted,
-            onReady = { ms ->
-                if (current(gen, e)) {
-                    _loading.value = false
-                    if (ms > 0) _durationOf.value = song.videoId to ms
-                    if (_quality.value == null) _quality.value = baseQuality(song)
-                }
-            },
-            onStarted = {},
-            onPlaying = { on -> if (current(gen, e)) { _playing.value = on; if (on) _loading.value = false } },
-            onEnd = { if (current(gen, e)) ended() },
-            onError = { message ->
-                System.err.println("Player: ${song.videoId}: $message")
-                if (current(gen, e)) fail(song, gen)
-            },
-        )
-        synchronized(gate) {
-            if (gen != generation) return e.dispose()
-            engine = e
-        }
-        e.setVolume(_volume.value * fade)
-    }
+    /** Linux decodes with the bundled FFmpeg, including AAC and the server's original file. */
+    private fun startBase(song: Song, gen: Int, atMs: Long = 0, preferOpus: Boolean = true, replacing: Engine? = null) {
+        val id = song.videoId
+        val local = LocalAudio.addressOf(id)
+        if ((id.startsWith("local:file:") && local == null) || (local != null && !Ffmpeg.available)) return fail(song, gen)
+        val subsonic = Subsonic.isSubsonic(id)
+        val opus = preferOpus && isYouTubeId(id) && Ffmpeg.available
+        val kind = if (opus) Streams.Kind.OPUS else Streams.Kind.AAC
+        val bundled = local != null || opus || (isLinux && Ffmpeg.available)
+        val serverAddress = if (subsonic) Subsonic.streamUrl(id) ?: return fail(song, gen) else null
+        val direct = serverAddress?.takeIf { bundled }?.let(Relay::direct)
+        val address = local ?: direct?.address ?: serverAddress?.replace("format=raw", "format=mp3&maxBitRate=320")
+            ?: Relay.addressOf(id, kind)
 
-    /** YouTube's Opus stream, decoded by FFmpeg; on any failure, the AAC one from where it got to. */
-    private fun startOpus(song: Song, gen: Int, atMs: Long) {
-        lateinit var e: FfmpegEngine
-        e = FfmpegEngine(
-            Relay.addressOf(song.videoId, Streams.Kind.OPUS), startAtMs = { atMs }, autoplay = wanted,
-            onReady = { ms ->
-                if (current(gen, e)) {
-                    if (ms > 0) _durationOf.value = song.videoId to ms
-                    if (_quality.value == null) {
-                        _quality.value = Quality("YouTube", Streams.known(song.videoId, Streams.Kind.OPUS)?.let { "Opus ${it.kbps} kbps" } ?: "Opus")
+        lateinit var e: Engine
+        val codec = { (e as? FfmpegEngine)?.codec?.uppercase(Locale.ROOT) }
+        val onReady: (Long) -> Unit = { ms ->
+            if (current(gen, e)) {
+                if (ms > 0) _durationOf.value = id to ms
+                if (_quality.value == null) {
+                    _quality.value = when {
+                        local != null -> Quality("Local file", codec() ?: "Original file")
+                        subsonic -> Quality("Your server", if (bundled) codec() ?: "Original stream" else "MP3 320 kbps")
+                        else -> {
+                            val format = if (opus) "Opus" else "AAC"
+                            Quality("YouTube", Streams.known(id, kind)?.let { "$format ${it.kbps} kbps" } ?: format)
+                        }
                     }
                 }
-            },
-            onStarted = { if (current(gen, e)) _loading.value = false },
-            onPlaying = { on -> if (current(gen, e)) { _playing.value = on; if (on) _loading.value = false } },
-            onEnd = { if (current(gen, e)) ended() },
-            onError = { message ->
-                System.err.println("Player: ${song.videoId}: Opus through FFmpeg failed ($message), trying AAC")
-                val mine = synchronized(gate) { (gen == generation && engine === e).also { if (it) engine = null } }
+                if (!bundled || !wanted) _loading.value = false
+            }
+        }
+        val onStarted: () -> Unit = { if (current(gen, e)) _loading.value = false }
+        val onPlaying: (Boolean) -> Unit = { on -> if (current(gen, e)) { _playing.value = on; _loading.value = false } }
+        val onEnd: () -> Unit = { ended(gen, e) }
+        val onError: (String?) -> Unit = { message ->
+            if (current(gen, e)) {
                 val at = runCatching { e.positionMs() }.getOrDefault(atMs)
                 e.dispose()
-                if (mine) {
-                    _quality.value = null
-                    startBase(song, gen, at, opus = false)
+                if (opus) {
+                    System.err.println("Player: $id: Opus through FFmpeg failed ($message), trying AAC")
+                    startBase(song, gen, at, preferOpus = false, replacing = e)
+                } else {
+                    if (!subsonic && local == null) System.err.println("Player: $id: $message")
+                    fail(song, gen)
                 }
-            },
-        )
-        synchronized(gate) {
-            if (gen != generation) return e.dispose()
-            engine = e
+            }
         }
-        e.setVolume(_volume.value * fade)
-    }
-
-    private fun baseQuality(song: Song): Quality = when {
-        Subsonic.isSubsonic(song.videoId) -> Quality("Your server", "MP3 320 kbps")
-        else -> Quality("YouTube", Streams.known(song.videoId)?.let { "AAC ${it.kbps} kbps" } ?: "AAC")
+        e = if (bundled) {
+            FfmpegEngine(address, { atMs }, wanted, onReady, onStarted, onPlaying, onEnd, onError, input = direct, local = local != null)
+        } else {
+            FxEngine(address, { atMs }, wanted, onReady, onStarted, onPlaying, onEnd, onError)
+        }
+        synchronized(gate) {
+            if (gen != generation || (replacing != null && engine !== replacing)) return e.dispose()
+            if (replacing != null) _quality.value = null
+            engine = e
+            e.setVolume(_volume.value * fade)
+        }
+        e.start()
     }
 
     private fun current(gen: Int, e: Engine) = synchronized(gate) { gen == generation && engine === e }
@@ -362,7 +385,14 @@ object Player {
         _error.value = "Couldn't play ${song.title}"
     }
 
-    private fun ended() {
+    private fun ended(gen: Int, finished: Engine) {
+        synchronized(gate) {
+            if (gen != generation || engine !== finished) return
+            engine = null
+            wanted = false
+            _playing.value = false
+        }
+        finished.dispose()
         if (_sleep.value == Sleep.EndOfSong) {
             _sleep.value = null
             pauseAll()
@@ -474,26 +504,26 @@ object Player {
             e.dispose()
             if (fallBack) { _quality.value = null; startBase(song, gen, at) }
         }
-        val onEnd: () -> Unit = { if (current(gen, e)) ended() }
+        val onEnd: () -> Unit = { ended(gen, e) }
+        val onPlaying: (Boolean) -> Unit = { on -> if (current(gen, e)) _playing.value = on }
         e = if (upgrade.flac != null) {
             val f = upgrade.flac
             FlacEngine(
                 source = { download(f.url, f.headers) }, startAtMs = startAt, autoplay = wanted,
                 onStarted = onStarted, onEnd = onEnd, onError = onError,
             )
+        } else if (isLinux && Ffmpeg.available) {
+            val direct = Relay.direct(upgrade.saavn!!)
+            FfmpegEngine(direct.address, startAt, wanted, {}, onStarted, onPlaying, onEnd, onError, input = direct)
         } else {
-            FxEngine(
-                upgrade.saavn!!, startAtMs = startAt, autoplay = wanted,
-                onReady = {}, onStarted = onStarted,
-                onPlaying = { on -> if (current(gen, e)) _playing.value = on },
-                onEnd = onEnd, onError = onError,
-            )
+            FxEngine(upgrade.saavn!!, startAt, wanted, {}, onStarted, onPlaying, onEnd, onError)
         }
         e.setVolume(_volume.value * fade)
         synchronized(gate) {
             if (gen != generation) return e.dispose()
             if (takeover) { incoming?.dispose(); incoming = e } else engine = e
         }
+        e.start()
     }
 
     private val files = Http.client.newBuilder().callTimeout(0, java.util.concurrent.TimeUnit.MILLISECONDS)
@@ -522,7 +552,7 @@ object Player {
     private class FxEngine(
         private val address: String,
         private val startAtMs: () -> Long,
-        private val autoplay: Boolean,
+        autoplay: Boolean,
         private val onReady: (Long) -> Unit,
         private val onStarted: () -> Unit,
         private val onPlaying: (Boolean) -> Unit,
@@ -532,9 +562,10 @@ object Player {
         @Volatile var player: MediaPlayer? = null
         @Volatile private var disposed = false
         @Volatile private var started = false
+        @Volatile private var playing = autoplay
         @Volatile private var volume = 1.0
 
-        init {
+        override fun start() {
             onFx {
                 if (disposed) return@onFx
                 val m = runCatching { MediaPlayer(Media(address)) }.getOrElse { onError(it.message); return@onFx }
@@ -545,7 +576,7 @@ object Player {
                     if (disposed) return@setOnReady
                     onReady(m.totalDuration?.toMillis()?.takeIf { it.isFinite() && it > 0 }?.toLong() ?: 0L)
                     startAtMs().takeIf { it > 500 }?.let { m.seek(Duration.millis(it.toDouble())) }
-                    if (autoplay) m.play() else { started = true; onStarted() }
+                    if (playing) m.play() else { started = true; onStarted() }
                 }
                 m.setOnPlaying {
                     if (!started) { started = true; onStarted() }
@@ -558,18 +589,24 @@ object Player {
             }
         }
 
-        override fun play() = onFx { player?.play() }
-        override fun pause() = onFx { player?.pause() }
+        override fun play() {
+            playing = true
+            if (player != null) onFx { player?.play() }
+        }
+        override fun pause() {
+            playing = false
+            if (player != null) onFx { player?.pause() }
+        }
         override fun seek(ms: Long) = onFx { player?.seek(Duration.millis(ms.toDouble())) }
         override fun positionMs(): Long = player?.currentTime?.toMillis()?.takeIf { it.isFinite() }?.toLong() ?: startAtMs()
         override fun durationMs(): Long = player?.totalDuration?.toMillis()?.takeIf { it.isFinite() }?.toLong() ?: 0L
         override fun setVolume(v: Double) {
             volume = v
-            onFx { player?.volume = v }
+            if (player != null) onFx { player?.volume = v }
         }
         override fun dispose() {
             disposed = true
-            onFx { player?.dispose(); player = null }
+            if (player != null) onFx { player?.dispose(); player = null }
         }
     }
 
@@ -601,20 +638,11 @@ object Player {
         }
     }
 
-    /**
-     * Where JavaFX reads [id] from: a song on your server as MP3, which JavaFX can play where it can't FLAC; anything
-     * else through the relay.
-     */
-    private fun addressOf(id: String): String? = when {
-        Subsonic.isSubsonic(id) -> Subsonic.streamUrl(id)?.replace("format=raw", "format=mp3&maxBitRate=320")
-        else -> Relay.addressOf(id)
-    }
-
     /** Adds YouTube Music's up-next for the last song, then runs [then]. */
     private fun extendThen(then: () -> Unit) {
         // Only YouTube songs have an up-next to follow.
         val last = _queue.value.lastOrNull()?.takeIf { isYouTubeId(it.videoId) } ?: run {
-            _playing.value = false
+            pauseAll()
             return
         }
         scope.launch {
