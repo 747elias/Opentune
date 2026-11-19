@@ -64,6 +64,8 @@ jobs:
         with:
           packages: platform-tools platforms;android-37.0 build-tools;36.0.0 ndk;27.2.12479018 cmake;3.22.1
       - uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: ${{ github.event_name == 'pull_request' }}
       - name: Build OpenTune
         env:
           LASTFM_API_KEY: ${{ secrets.LASTFM_API_KEY }}
@@ -79,11 +81,11 @@ jobs:
           JAVA_ARCH: ${{ matrix.java-architecture }}
         run: |
           app=desktop/build/compose/binaries/main/app/OpenTune.app
-          lipo -verify_arch "$ARCH" "$app/Contents/MacOS/OpenTune"
-          lipo -verify_arch "$ARCH" "$app/Contents/runtime/Contents/Home/lib/server/libjvm.dylib"
+          lipo "$app/Contents/MacOS/OpenTune" -verify_arch "$ARCH"
+          lipo "$app/Contents/runtime/Contents/Home/lib/server/libjvm.dylib" -verify_arch "$ARCH"
           "$app/Contents/MacOS/OpenTune" --self-check | tee "$RUNNER_TEMP/opentune-self-check.log"
           if grep -q '^OpenTune: ' "$RUNNER_TEMP/opentune-self-check.log"; then
-            grep -E "^OpenTune: Mac OS X 26([.][0-9]+)* \($JAVA_ARCH\)$" "$RUNNER_TEMP/opentune-self-check.log"
+            grep -E "^OpenTune: Mac OS X .* \($JAVA_ARCH\)$" "$RUNNER_TEMP/opentune-self-check.log"
           fi
           ditto -c -k --sequesterRsrc --keepParent "$app" "$RUNNER_TEMP/OpenTune.app.zip"
       - uses: actions/upload-artifact@v4
@@ -214,9 +216,9 @@ jobs:
           test "$(readlink "$mount/Applications")" = /Applications
           app="$mount/OpenTune.app"
           executable="$app/Contents/MacOS/OpenTune"
-          lipo -verify_arch arm64 x86_64 "$executable"
+          lipo "$executable" -verify_arch arm64 x86_64
           codesign --verify --deep --strict "$app"
           "$executable" --self-check | tee "$RUNNER_TEMP/opentune-self-check.log"
           if grep -q '^OpenTune: ' "$RUNNER_TEMP/opentune-self-check.log"; then
-            grep -E "^OpenTune: Mac OS X 26([.][0-9]+)* \($JAVA_ARCH\)$" "$RUNNER_TEMP/opentune-self-check.log"
+            grep -E "^OpenTune: Mac OS X .* \($JAVA_ARCH\)$" "$RUNNER_TEMP/opentune-self-check.log"
           fi

@@ -25,8 +25,8 @@ validate_payload() {
         echo "Missing jpackage launcher, metadata or runtime in $app" >&2
         exit 1
     }
-    xcrun lipo -verify_arch "$arch" "$contents/MacOS/OpenTune"
-    xcrun lipo -verify_arch "$arch" "$contents/runtime/Contents/Home/lib/server/libjvm.dylib"
+    xcrun lipo "$contents/MacOS/OpenTune" -verify_arch "$arch"
+    xcrun lipo "$contents/runtime/Contents/Home/lib/server/libjvm.dylib" -verify_arch "$arch"
 }
 
 validate_payload "$arm_app" arm64
@@ -67,7 +67,7 @@ plutil -replace CFBundleIdentifier -string "$bundle_id.x86-64" "$intel_payload/C
 xcrun clang -arch arm64 -arch x86_64 -mmacosx-version-min=11.0 \
     -std=c11 -D_DARWIN_C_SOURCE -O2 -Wall -Wextra -Werror \
     "$scripts/macos-launcher.c" -o "$contents/MacOS/OpenTune"
-xcrun lipo -verify_arch arm64 x86_64 "$contents/MacOS/OpenTune"
+xcrun lipo "$contents/MacOS/OpenTune" -verify_arch arm64 x86_64
 
 sign=(codesign --force --sign "$identity")
 if [[ "$identity" != - ]]; then
