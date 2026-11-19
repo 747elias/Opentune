@@ -147,6 +147,13 @@ internal object WindowsFrame {
         return runCatching { api!!.user.PostMessageW(h, WM_OPENTUNE_DRAG, 0, 0) }.getOrDefault(false)
     }
 
+    fun showSystemMenu() {
+        val h = hwnd ?: return
+        val u = api?.user ?: return
+        val point = IntArray(2)
+        if (u.GetCursorPos(point)) u.PostMessageW(h, WM_OPENTUNE_SYSTEM_MENU, point[0].toLong(), point[1].toLong())
+    }
+
     private fun command(sc: Long): Boolean {
         val h = hwnd ?: return false
         return runCatching { api!!.user.PostMessageW(h, WM_SYSCOMMAND, sc, 0) }.getOrDefault(false)
@@ -178,6 +185,12 @@ internal object WindowsFrame {
                 if (u.GetCursorPos(at) && u.ScreenToClient(w, at)) {
                     u.PostMessageW(w, WM_LBUTTONUP, 0, (at[0].toLong() and 0xFFFF) or ((at[1].toLong() and 0xFFFF) shl 16))
                 }
+                return 0
+            }
+            WM_OPENTUNE_SYSTEM_MENU -> {
+                val menu = u.GetSystemMenu(w, false) ?: return 0
+                val selected = u.TrackPopupMenu(menu, TPM_RETURNCMD or TPM_RIGHTBUTTON, wParam.toInt(), lParam.toInt(), 0, w, null)
+                if (selected != 0) u.PostMessageW(w, WM_SYSCOMMAND, selected.toLong(), 0)
                 return 0
             }
             WM_NCDESTROY -> {
@@ -264,6 +277,8 @@ internal object WindowsFrame {
         fun ReleaseCapture(): Boolean
         fun GetCursorPos(point: IntArray): Boolean
         fun ScreenToClient(hWnd: Pointer, point: IntArray): Boolean
+        fun GetSystemMenu(hWnd: Pointer, revert: Boolean): Pointer?
+        fun TrackPopupMenu(menu: Pointer, flags: Int, x: Int, y: Int, reserved: Int, hWnd: Pointer, exclude: Pointer?): Int
     }
 
     @Suppress("FunctionName")
@@ -300,6 +315,9 @@ internal object WindowsFrame {
     private const val WM_SYSCOMMAND = 0x112
     private const val WM_LBUTTONUP = 0x202
     private const val WM_OPENTUNE_DRAG = 0x8000 + 0x42
+    private const val WM_OPENTUNE_SYSTEM_MENU = 0x8000 + 0x43
+    private const val TPM_RIGHTBUTTON = 0x2
+    private const val TPM_RETURNCMD = 0x100
     private const val SC_MINIMIZE = 0xF020L
     private const val SC_MAXIMIZE = 0xF030L
     private const val SC_RESTORE = 0xF120L

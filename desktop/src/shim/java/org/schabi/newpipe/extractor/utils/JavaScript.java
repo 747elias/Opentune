@@ -38,13 +38,20 @@ public final class JavaScript {
     }
 
     public static String run(final String function, final String functionName, final String... parameters) {
+        try {
+            return runOnGraal(function, functionName, parameters);
+        } catch (final RuntimeException graal) {
+            return rhinoRun(function, functionName, parameters);
+        }
+    }
+
+    /** Runs without the fallback, so the packaged runtime can verify GraalJS itself. */
+    public static String runOnGraal(final String function, final String functionName, final String... parameters) {
         try (Context cx = context()) {
             cx.eval("js", function);
             final Value f = cx.getBindings("js").getMember(functionName);
             final Value result = f.execute((Object[]) parameters);
             return result.isString() ? result.asString() : result.toString();
-        } catch (final RuntimeException graal) {
-            return rhinoRun(function, functionName, parameters);
         }
     }
 

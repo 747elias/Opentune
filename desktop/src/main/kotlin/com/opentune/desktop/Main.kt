@@ -1,5 +1,11 @@
 package com.opentune.desktop
 
+import androidx.compose.ui.graphics.Canvas
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.Paint
+import androidx.compose.ui.graphics.asSkiaBitmap
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Window
@@ -12,12 +18,19 @@ import com.opentune.data.Http
 import com.opentune.data.settings.AppSettings
 import com.opentune.data.subsonic.Subsonic
 import java.io.File
+import java.nio.file.Files
+import java.sql.DriverManager
+import org.schabi.newpipe.extractor.utils.JavaScript
 
 /** Where the desktop keeps what it saves: ~/.opentune, read through the shared code's Context. */
 internal val appContext by lazy { android.content.Context(File(System.getProperty("user.home"), ".opentune")) }
 
 fun main(args: Array<String>) {
-    if ("--self-check" in args) return selfCheck()
+    if ("--self-check" in args) {
+        // The Windows GUI launcher has no console. CI can read this report and the exit code.
+        val report = args.firstOrNull { it.startsWith("--self-check-report=") }?.substringAfter('=')?.let(::File)
+        selfCheck(report)
+    }
     // The shared settings and music server, as the phone starts them.
     AppSettings.init(appContext)
     Subsonic.init(appContext)
@@ -61,25 +74,54 @@ fun main(args: Array<String>) {
 }
 
 /**
- * `OpenTune --self-check`: loads what the installer must carry (FFmpeg,
- * GraalJS, SQLite), prints what it found and exits, failing if any is
- * missing. For checking a packaged build, where the trimmed Java runtime
- * could be short of a module the tests' full one has.
+ * Checks the packaged Java runtime and native dependencies without opening a
+ * window, starting playback or touching the user's library.
  */
-private fun selfCheck() {
+private fun selfCheck(report: File?): Nothing {
     val checks = listOf(
         "FFmpeg" to { check(Ffmpeg.available) { "didn't load" }; "loaded" },
         "GraalJS" to {
-            val got = org.schabi.newpipe.extractor.utils.JavaScript.run("var f = (a) => a?.at(-1) ?? 'x';", "f", "abc")
+            val got = JavaScript.runOnGraal("var f = (a) => a?.at(-1) ?? 'x';", "f", "abc")
             check(got == "c") { "got $got" }
             "ran"
         },
-        "SQLite" to { "${Library.playlists.value.size} playlists, ${Library.liked.value.size} liked" },
+        "SQLite" to { checkSqlite(); "stored and read a row" },
+        "Skia" to {
+            val image = ImageBitmap(1, 1)
+            val paint = Paint().apply { color = Color.Green }
+            Canvas(image).drawRect(0f, 0f, 1f, 1f, paint)
+            check(image.asSkiaBitmap().getColor(0, 0) == Color.Green.toArgb()) { "couldn't render a pixel" }
+            "rendered offscreen"
+        },
     )
     var failed = false
-    for ((name, run) in checks) {
+    val lines = checks.map { (name, run) ->
         val result = runCatching(run)
-        println("$name: " + result.fold({ "ok, $it" }, { failed = true; "FAILED, $it" }))
+        val status = result.fold({ "ok, $it" }, { failed = true; "FAILED, $it" })
+        "$name: $status".also(::println)
     }
+    report?.writeText(lines.joinToString(separator = "\n", postfix = "\n"))
     kotlin.system.exitProcess(if (failed) 1 else 0)
+}
+
+private fun checkSqlite() {
+    val folder = Files.createTempDirectory("opentune-self-check-").toFile()
+    try {
+        val url = "jdbc:sqlite:${File(folder, "library.db").absolutePath}"
+        DriverManager.getConnection(url).use { connection ->
+            connection.createStatement().use { statement ->
+                statement.executeUpdate("CREATE TABLE songs(title TEXT NOT NULL)")
+                statement.executeUpdate("INSERT INTO songs (title) VALUES ('OpenTune')")
+            }
+        }
+        DriverManager.getConnection(url).use { connection ->
+            connection.createStatement().use { statement ->
+                statement.executeQuery("SELECT title FROM songs").use { rows ->
+                    check(rows.next() && rows.getString(1) == "OpenTune") { "saved row didn't survive reopening" }
+                }
+            }
+        }
+    } finally {
+        folder.deleteRecursively()
+    }
 }

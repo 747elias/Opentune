@@ -78,6 +78,16 @@ documented in [service integrations](docs/service-integrations.md).
 
 Each release lists SHA-256 checksums of its APKs in `SHA256SUMS.txt`.
 
+### Windows 11
+
+Download the [OpenTune Windows x64 installer](https://github.com/justshivv/Opentune/releases/download/v1.1.0/OpenTune-v1.1.0-windows-x64-setup.exe)
+and double-click it. After setup, open **OpenTune** from the Start menu. The
+installer includes Java and the audio engine.
+
+For a current development build, open **Actions → CI** in the repository,
+choose the run for the commit you want, and download the standalone Windows
+setup `.exe` from **Artifacts**. GitHub requires you to sign in for this download.
+
 ### iPhone and iPad
 
 **Requires iOS/iPadOS 16 or newer. An Android APK cannot be installed on an iPhone.**
@@ -379,7 +389,8 @@ on your own connection with no hosted proxy.
   the watch, skip, like, see what's up next, and turn the crown for volume.
   It asks for headphones rather than playing from the watch's speaker.
 - **Desktop (early).** A Windows, macOS and Linux app (`desktop/`, run it
-  with `./gradlew :desktop:run`; CI builds an MSI, DMG and DEB). It has
+  with `./gradlew :desktop:run`; CI builds Windows EXE and MSI installers,
+  a macOS DMG and Linux packages). It has
   Home (moods and genres, a speed dial and daily mixes made from what you
   play there, quick picks, then YouTube Music's rows page after page, new
   releases and the charts), a Library with your year so far, shortcuts, your
