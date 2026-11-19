@@ -472,13 +472,14 @@ internal fun LibraryHome(onShelf: (Shelf) -> Unit, onPlaylist: (String) -> Unit,
     val month = remember(history) { Wrapped.summarize(history, now - 30L * 86_400_000L, now) }
     val mixes = remember(history) { DailyMixes.build(history) }
     ScrollPage("Library") {
-        item(key = "year") { YearCard(year) }
+        item(key = "year") { YearCard(year) { onShelf(Shelf.REPLAY) } }
         item(key = "shortcuts") {
             HRow(12.dp) {
                 item { Shortcut(Icons.Rounded.Favorite, "Liked songs", songCount(liked.size), heart = true) { onShelf(Shelf.LIKED) } }
                 item { Shortcut(Icons.Rounded.Folder, "Local files", songCount(localTracks.size)) { onShelf(Shelf.LOCAL) } }
                 item { Shortcut(Icons.Rounded.AutoAwesome, "Smart playlists", "Fill from your listening") { onShelf(Shelf.SMART) } }
                 item { Shortcut(Icons.Rounded.History, "Recently played", if (recent.isEmpty()) "Nothing yet" else "${recent.size} songs") { onShelf(Shelf.RECENT) } }
+                item { Shortcut(Icons.Rounded.History, "Replay", "Your listening stats") { onShelf(Shelf.REPLAY) } }
                 if (server != null) item { Shortcut(Icons.Rounded.Storage, "Your server", server!!.url.substringAfter("://").substringBefore('/')) { onShelf(Shelf.SERVER) } }
                 item { Shortcut(Icons.Rounded.LibraryMusic, "YouTube Music", "Account library") { onOpenAny(AccountLibraryKey) } }
                 item { Shortcut(Icons.Rounded.Add, "New playlist", "Start one here") { naming = true } }
@@ -560,13 +561,13 @@ private fun songCountOf(n: Int, what: String) = if (n == 1) "1 $what" else "$n $
  * songs and artists, with the song you've played most and its cover.
  */
 @Composable
-private fun YearCard(summary: Wrapped.Summary) {
+private fun YearCard(summary: Wrapped.Summary, onOpen: () -> Unit) {
     val top = summary.topSongs.firstOrNull()
     val base = MaterialTheme.colorScheme.surfaceContainerHigh
     val colour = rememberCoverColor(top?.thumbnailUrl, base)
     val shape = RoundedCornerShape(22.dp)
     Box(
-        Modifier.padding(horizontal = GUTTER).fillMaxWidth().clip(shape)
+        Modifier.padding(horizontal = GUTTER).fillMaxWidth().clip(shape).clickable(onClick = onOpen)
             .background(Brush.linearGradient(listOf(tint(colour, base, 0.55f), tint(colour, base, 0.18f)))),
     ) {
         Row(Modifier.padding(22.dp), verticalAlignment = Alignment.CenterVertically) {

@@ -650,6 +650,7 @@ internal fun LibraryPage(shelf: Shelf, onShelf: (Shelf) -> Unit, onPlaylist: (St
         Shelf.LOCAL -> LocalMusicPage()
         Shelf.DOWNLOADS -> DownloadsPage()
         Shelf.SMART -> SmartPlaylistsPage { onOpenAny(SmartPlaylistKey(it)) }
+        Shelf.REPLAY -> ReplayPage()
     }
 }
 
@@ -663,7 +664,7 @@ internal fun IconCover(icon: ImageVector, colours: List<Color>, modifier: Modifi
 
 internal enum class Shelf(val label: String) {
     LIKED("Liked songs"), PLAYLISTS("Playlists"), SERVER("Your server"), RECENT("Recently played"),
-    LOCAL("Local files"), DOWNLOADS("Downloads"), SMART("Smart playlists"),
+    LOCAL("Local files"), DOWNLOADS("Downloads"), SMART("Smart playlists"), REPLAY("Replay"),
 }
 
 /** A plain list of songs under a big title, such as Up next. */

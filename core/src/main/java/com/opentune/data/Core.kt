@@ -76,7 +76,9 @@ object Core {
         java.io.File(app.filesDir, "waveforms").takeIf { it.exists() }?.let { dir -> Thread { dir.deleteRecursively() }.start() }
         com.opentune.data.podcasts.Podcasts.init(app)
         com.opentune.data.library.ResumePoints.init(app)
-        AlbumCovers.init(app)
+        AlbumCovers.init(app.filesDir) { uri ->
+            app.contentResolver.openInputStream(android.net.Uri.parse(uri))?.use { it.read() >= 0 } ?: false
+        }
         com.opentune.data.spotify.SpotifyWebPlayer.init(app)
         com.opentune.data.spotify.SpotifySync.init(app)
         AutoEq.init(app)

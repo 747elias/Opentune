@@ -37,6 +37,7 @@ fun main(args: Array<String>) {
     com.opentune.data.library.ResumePoints.init(appContext)
     com.opentune.data.listenbrainz.ListenBrainz.init(appContext)
     com.opentune.data.autoeq.AutoEq.init(appContext)
+    com.opentune.data.covers.AlbumCovers.init(appContext.filesDir)
     OfflineDownloads.resumePending()
     DesktopSession.start()
     DesktopPlaybackServices.start()

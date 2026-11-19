@@ -1,8 +1,5 @@
 package com.opentune.data.covers
 
-import android.content.ContentResolver
-import android.content.Context
-import androidx.core.net.toUri
 import android.os.SystemClock
 import com.opentune.core.BuildConfig
 import com.opentune.data.DebugLog as Log
@@ -64,16 +61,15 @@ object AlbumCovers {
     private var lastRequestAt = 0L
     private val cache = ConcurrentHashMap<String, String>()
     private var file: File? = null
-    /** Only for opening local files' album art; a resolver rather than a Context. */
-    private var resolver: ContentResolver? = null
+    private var localArtwork: ((String) -> Boolean)? = null
 
-    fun init(context: Context) {
-        resolver = context.applicationContext.contentResolver
+    fun init(directory: File, localArtwork: ((String) -> Boolean)? = null) {
+        this.localArtwork = localArtwork
         // Earlier files held covers from compilations the song is also on (and "none"s that would
         // hide Apple's and Deezer's); every answer is looked up again.
-        File(context.filesDir, "album-covers.json").delete()
-        File(context.filesDir, "album-covers-v2.json").delete()
-        val f = File(context.filesDir, "album-covers-v3.json")
+        File(directory, "album-covers.json").delete()
+        File(directory, "album-covers-v2.json").delete()
+        val f = File(directory, "album-covers-v3.json")
         file = f
         scope.launch {
             runCatching { json.decodeFromString(MapSerializer(String.serializer(), String.serializer()), f.readText()) }
@@ -98,8 +94,7 @@ object AlbumCovers {
 
     /** A local file's album art, if the phone actually has an image for it. */
     private suspend fun hasLocalArt(uri: String): Boolean = withContext(Dispatchers.IO) {
-        val resolver = resolver ?: return@withContext true
-        runCatching { resolver.openInputStream(uri.toUri())?.use { it.read() >= 0 } ?: false }.getOrDefault(false)
+        runCatching { localArtwork?.invoke(uri) ?: true }.getOrDefault(false)
     }
 
     /**

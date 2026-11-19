@@ -26,7 +26,7 @@ class DesktopTest {
     }
 
     @Test fun shuffleKeepsTheSongPlayingFirstAndGoesBack() {
-        val songs = (0 until 12).map { Song("song${it.toString().padStart(7, '0')}", "Song $it", "Artist", null) }
+        val songs = (0 until 12).map { Song("local:track-$it", "Song $it", "Artist", null) }
         Player.cue(songs, 4)
         Player.toggleShuffle()
         assertEquals(Player.Shuffle.ON, Player.shuffle.value)

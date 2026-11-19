@@ -153,10 +153,22 @@ internal fun Artwork(url: String?, modifier: Modifier, shape: Shape) {
  * beside the cover.
  */
 @Composable
-internal fun NowPlaying(song: Song, docked: Boolean, onClose: () -> Unit) {
+internal fun NowPlaying(track: Song, docked: Boolean, onClose: () -> Unit) {
     var showLyrics by remember { mutableStateOf(false) }
     val playing by Player.playing.collectAsState()
     val theme by AppSettings.theme.collectAsState()
+    val preferences by AppSettings.ui.collectAsState()
+    val duration by Player.durationOf.collectAsState()
+    val cover by androidx.compose.runtime.produceState(track.thumbnailUrl, track.videoId, preferences.albumCovers, duration) {
+        value = track.thumbnailUrl
+        if (preferences.albumCovers) {
+            val length = duration.takeIf { it.first == track.videoId }?.second?.takeIf { it > 0 }
+                ?: (track.durationText?.let(Player::seconds)?.times(1000)?.toLong() ?: 0)
+            value = com.opentune.data.covers.AlbumCovers.cached(track)
+                ?: com.opentune.data.covers.AlbumCovers.coverFor(track, length) ?: track.thumbnailUrl
+        }
+    }
+    val song = if (cover == track.thumbnailUrl) track else track.copy(thumbnailUrl = cover)
     PlayerTheme(seed = rememberArtworkSeed(song.thumbnailUrl)) {
         // Its own ink: the player is dark whatever the window around it is.
         CompositionLocalProvider(LocalContentColor provides MaterialTheme.colorScheme.onSurface) {
