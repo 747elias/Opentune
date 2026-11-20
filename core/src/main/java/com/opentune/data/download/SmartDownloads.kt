@@ -41,7 +41,7 @@ object SmartDownloads {
                     } else {
                         // Lowering the limit takes effect even while offline, without touching manual downloads.
                         Downloads.entries.value.values.filter { it.smartDownload }.sortedByDescending { it.addedAt }
-                            .drop(limit.coerceIn(10, 500)).forEach { Downloads.removeSmart(app, it.song.videoId) }
+                            .drop(limit.coerceIn(SMART_SONG_LIMIT)).forEach { Downloads.removeSmart(app, it.song.videoId) }
                         manager.enqueueUniquePeriodicWork(REFRESH, ExistingPeriodicWorkPolicy.UPDATE,
                             PeriodicWorkRequestBuilder<SmartDownloadWorker>(12, TimeUnit.HOURS)
                                 .setConstraints(constraints()).build())
@@ -72,11 +72,8 @@ object SmartDownloads {
     }
 
     internal fun candidates(): List<Song> {
-        val favourites = History.records.value.groupBy { it.videoId }.values
-            .sortedByDescending { group -> group.sumOf { it.listenedMs } }
-            .map { group -> group.maxBy { it.playedAt }.toSong() }
         val mixes = if (AppSettings.library.value.smartDownloadMixes) todaysMixSongs() else emptyList()
-        return (mixes + LibraryStore.liked.value.map { it.toSong() } + favourites)
+        return smartDownloadCandidates(mixes, LibraryStore.liked.value.map { it.toSong() }, History.records.value)
             .filter { com.opentune.data.isYouTubeId(it.videoId) && !LibraryStore.isDisliked(it.videoId) &&
                 (!AppSettings.library.value.hideExplicit || it.isExplicit != true) }
             .distinctBy { it.videoId }
@@ -101,21 +98,9 @@ internal fun todaysMixSongs(nowMs: Long = System.currentTimeMillis()): List<Song
     return mixStarts(mixes.map { it.songs })
 }
 
-internal const val MIX_SONGS_KEPT = 15
-
-/** The first [MIX_SONGS_KEPT] of each mix, taken a song from each in turn so every mix gets its start. */
-internal fun mixStarts(mixes: List<List<Song>>): List<Song> =
-    com.opentune.data.ExploreFeed.weave(mixes.map { it.take(MIX_SONGS_KEPT) }).distinctBy { it.videoId }
-
-internal fun smartDownloadAllowed(enabled: Boolean, wifi: Boolean, charging: Boolean,
-    battery: Int, minimum: Int, freeBytes: Long): Boolean =
-    enabled && wifi && (charging || battery >= minimum.coerceIn(15, 80)) && freeBytes >= SMART_RESERVE_BYTES
-
-internal const val SMART_RESERVE_BYTES = 512L * 1024 * 1024
-
 /** The desired smart set, excluding copies the listener saved manually. */
 internal fun smartDownloadSelection(candidates: List<Song>, entries: Map<String, DownloadEntry>, limit: Int): List<Song> =
-    candidates.distinctBy { it.videoId }.filter { entries[it.videoId]?.smartDownload != false }.take(limit.coerceIn(10, 500))
+    selectSmartDownloads(candidates, entries.filterValues { !it.smartDownload }.keys, limit)
 
 class SmartDownloadWorker(context: Context, parameters: WorkerParameters) : CoroutineWorker(context, parameters) {
     override suspend fun doWork(): Result {
@@ -135,5 +120,3 @@ class SmartDownloadWorker(context: Context, parameters: WorkerParameters) : Coro
         return Result.success()
     }
 }
-
-internal class SmartDownloadDeferred : java.io.IOException("Smart downloads wait for Wi-Fi, battery and free space")

@@ -64,10 +64,5 @@ object ExploreFeed {
      * Takes from each list in turn, so the board mixes them instead of
      * showing every mood before the first album.
      */
-    fun <T> weave(lists: List<List<T>>): List<T> {
-        val out = ArrayList<T>(lists.sumOf { it.size })
-        val iterators = lists.map { it.iterator() }
-        while (iterators.any { it.hasNext() }) iterators.forEach { if (it.hasNext()) out += it.next() }
-        return out
-    }
+    fun <T> weave(lists: List<List<T>>): List<T> = roundRobin(lists)
 }

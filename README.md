@@ -379,7 +379,8 @@ on your own connection with no hosted proxy.
   the watch, skip, like, see what's up next, and turn the crown for volume.
   It asks for headphones rather than playing from the watch's speaker.
 - **Desktop (early).** A Windows, macOS and Linux app (`desktop/`, run it
-  with `./gradlew :desktop:run`; CI builds an MSI, DMG and DEB). It has
+  with `./gradlew :desktop:run`). macOS release builds use one universal DMG
+  for Intel and Apple silicon Macs running macOS Tahoe. It has
   Home (moods and genres, a speed dial and daily mixes made from what you
   play there, quick picks, then YouTube Music's rows page after page, new
   releases and the charts), a Library with your year so far, shortcuts, your
@@ -399,13 +400,46 @@ on your own connection with no hosted proxy.
   play YouTube's Opus stream (about 160 kbps) through a bundled FFmpeg,
   falling back to AAC; YouTube's player code runs on GraalJS; and the
   library (liked songs, playlists and the full play history) is kept in
-  SQLite. It uses the phone app's code for YouTube Music, lyrics, Subsonic
-  and settings as-is, but finds streams with NewPipe only, so some songs
-  don't play yet. Signing in to YouTube Music isn't there. On Linux, songs
-  from your own server and JioSaavn still play through JavaFX, which needs
-  the system's FFmpeg libraries (libavcodec).
+  SQLite. Desktop also has offline downloads, local audio import, playlist
+  import from links and CSV, smart playlists, podcast subscriptions and
+  resume points, internet radio, listening rooms, microphone recognition,
+  SponsorBlock, and JSON backups. Crossfade and Automix use two playback
+  decks. The player can send audio to Chromecast and DLNA receivers, and
+  supports AutoEq headphone profiles, stereo widening and remixes. On
+  macOS the player appears in the system's Now Playing controls.
 - **Opens YouTube links.** music.youtube.com, youtube.com and youtu.be
   links, or links shared to the app, open in OpenTune.
+
+### Install on macOS
+
+Download `OpenTune-<version>-macos-universal.dmg` from GitHub Releases, open
+it and drag OpenTune into Applications. The app includes its Java runtime
+for both processor types.
+
+To connect YouTube Music, open **Settings → Accounts → YouTube Music** and
+select **Sign in on this Mac**. Complete sign-in on Google's page in the
+OpenTune sign-in window. **Library → YouTube Music** shows the connected
+account's playlists and likes.
+
+If Google declines sign-in in that window, select **Sign in with Android**.
+Sign in to OpenTune on your phone, open **Settings → Link a device** and scan
+the Mac's QR code with both devices on the same network.
+
+The **macOS Tahoe** workflow builds and tests the same DMG on both processor
+types. Its `macos-universal` artifact contains the DMG for a preview build.
+To sign and notarize release builds, configure the following GitHub Actions
+secrets in the repository.
+
+| Secret | Value |
+| --- | --- |
+| `MACOS_CERTIFICATE_BASE64` | Base64-encoded Developer ID Application certificate and private key exported as a PKCS#12 file |
+| `MACOS_CERTIFICATE_PASSWORD` | Password used to export the PKCS#12 file |
+| `MACOS_NOTARY_KEY_BASE64` | Base64-encoded App Store Connect API key (`.p8`) |
+| `MACOS_NOTARY_KEY_ID` | App Store Connect API key ID |
+| `MACOS_NOTARY_ISSUER_ID` | App Store Connect issuer ID |
+
+For a build without notarization, macOS can require **Open Anyway** under
+**System Settings → Privacy & Security** after the first launch attempt.
 
 ### Library and account
 

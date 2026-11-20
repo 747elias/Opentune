@@ -18,6 +18,8 @@ import org.jflac.metadata.StreamInfo
 
 /** A song playing, whichever way: JavaFX for YouTube, JioSaavn and servers, [FlacEngine] for lossless files. */
 internal interface Engine {
+    /** Starts loading once the caller has attached its callbacks and initial volume. */
+    fun begin()
     fun play()
     fun pause()
     fun seek(ms: Long)
@@ -25,12 +27,16 @@ internal interface Engine {
     fun durationMs(): Long
     /** 0 to 1, the sleep timer's fade included. */
     fun setVolume(v: Double)
+    fun setNormalizationDb(db: Double) {}
+    fun setRateFactor(factor: Float) {}
+    fun setBassCut(frequencyHz: Float) {}
+    fun audioRoute(): DesktopAudioOutput.Route? = null
     fun dispose()
 }
 
 /** Where decoded samples go: the sound card, or in tests a stand-in. */
 internal interface PcmOut {
-    /** Opens for [format], or for 16-bit at the same rate when the card won't take more; the format it opened. */
+    /** Opens the requested or a compatible format at the same rate, then reports the actual format. */
     fun open(format: AudioFormat): AudioFormat
     /** Blocks until written, or returns early when stopped or flushed. */
     fun write(bytes: ByteArray, off: Int, len: Int): Int
@@ -41,26 +47,44 @@ internal interface PcmOut {
     fun close()
     /** Frames played since it opened. */
     val framePosition: Long
+    val route: DesktopAudioOutput.Route? get() = null
     /** Sets the line's own gain; false when it has none, and the samples are scaled instead. */
     fun setGainDb(db: Float): Boolean
 }
 
-/** The computer's default output, through Java Sound, at the song's own rate and depth when it takes them. */
-internal class SoundCard : PcmOut {
-    private var line: SourceDataLine? = null
+/** The chosen or default output, through Java Sound, at the song's own rate and depth when accepted. */
+internal class SoundCard(private val bufferMs: Int = 500) : PcmOut {
+    @Volatile private var line: SourceDataLine? = null
+    @Volatile override var route: DesktopAudioOutput.Route? = null
+        private set
 
     override fun open(format: AudioFormat): AudioFormat {
-        val tries = listOf(format, AudioFormat(format.sampleRate, 16, format.channels, true, false)).distinct()
+        val tries = buildList {
+            add(format)
+            if (format.encoding == AudioFormat.Encoding.PCM_FLOAT) {
+                add(AudioFormat(format.sampleRate, 24, format.channels, true, false))
+            }
+            add(AudioFormat(format.sampleRate, 16, format.channels, true, false))
+        }.distinct()
         var last: Exception? = null
-        for (f in tries) {
-            try {
-                val l = AudioSystem.getLine(DataLine.Info(SourceDataLine::class.java, f)) as SourceDataLine
-                // Half a second of sound in hand: enough to ride out a busy moment, little to wait for on a seek.
-                l.open(f, (f.frameRate * f.frameSize / 2).toInt())
-                line = l
-                return f
-            } catch (e: Exception) {
-                last = e
+        val preferred = DesktopAudioOutput.selected.value?.let { selected ->
+            DesktopAudioOutput.devices().firstOrNull { it.id == selected }
+        }
+        for (device in listOfNotNull(preferred) + listOf(null)) {
+            for (f in tries) {
+                var candidate: SourceDataLine? = null
+                try {
+                    val info = DataLine.Info(SourceDataLine::class.java, f)
+                    candidate = (if (device != null) AudioSystem.getMixer(device.info).getLine(info) else AudioSystem.getLine(info)) as SourceDataLine
+                    candidate.open(f, (f.frameRate * bufferMs / 1000).toInt() * f.frameSize)
+                    val actual = candidate.format
+                    route = DesktopAudioOutput.Route(device?.name, actual)
+                    line = candidate
+                    return actual
+                } catch (e: Exception) {
+                    runCatching { candidate?.close() }
+                    last = e
+                }
             }
         }
         throw IOException("The sound card won't play ${format.sampleRate.toInt()} Hz: ${last?.message}")
@@ -102,6 +126,8 @@ internal class FlacEngine(
     private val onEnd: () -> Unit,
     private val onError: (String) -> Unit,
     private val out: PcmOut = SoundCard(),
+    private val onReady: (Long) -> Unit = {},
+    startImmediately: Boolean = true,
 ) : Engine {
     private val lock = Object()
     private val file: File = File.createTempFile("opentune-", ".flac").apply { deleteOnExit() }
@@ -111,6 +137,7 @@ internal class FlacEngine(
     @Volatile private var disposed = false
     @Volatile private var paused = !autoplay
     @Volatile private var seekRequest: Long? = null
+    @Volatile private var pendingSeekMs: Long? = null
     /** Where a seek is going, said as the position until its first sound plays. */
     @Volatile private var seekingTo: Long? = null
     @Volatile private var info: StreamInfo? = null
@@ -126,8 +153,15 @@ internal class FlacEngine(
     @Volatile var output: AudioFormat? = null
         private set
 
-    private val download = Thread({ fetch() }, "flac-download").apply { isDaemon = true; start() }
-    private val player = Thread({ run() }, "flac-play").apply { isDaemon = true; priority = Thread.MAX_PRIORITY; start() }
+    private val download = Thread({ fetch() }, "flac-download").apply { isDaemon = true }
+    private val player = Thread({ run() }, "flac-play").apply { isDaemon = true; priority = Thread.MAX_PRIORITY }
+
+    init { if (startImmediately) begin() }
+
+    override fun begin() {
+        download.start()
+        player.start()
+    }
 
     /** Whether the whole file is saved, so a seek anywhere is immediate. */
     internal val arrivedAll: Boolean get() = complete
@@ -214,6 +248,11 @@ internal class FlacEngine(
         val opened = out.open(AudioFormat(si.sampleRate.toFloat(), si.bitsPerSample, si.channels, true, false))
         output = opened
         applyVolume()
+        pendingSeekMs?.let {
+            pendingSeekMs = null
+            seek(it)
+        }
+        onReady(durationMs())
         if (!paused) out.start()
     }
 
@@ -272,6 +311,10 @@ internal class FlacEngine(
                 if (converted.size < n * 2) converted = ByteArray(n * 2)
                 to16(bytes, off, n, converted)
                 bytes = converted; off = 0; len = n * 2
+                if (softGain != 1.0) {
+                    bytes = bytes.copyOf(len)
+                    scale(bytes, 16, softGain)
+                }
             } else if (softGain != 1.0) {
                 bytes = bytes.copyOfRange(off, off + len); off = 0
                 scale(bytes, si.bitsPerSample, softGain)
@@ -315,7 +358,11 @@ internal class FlacEngine(
     }
 
     override fun seek(ms: Long) {
-        val si = info ?: return
+        val si = info
+        if (si == null) {
+            pendingSeekMs = ms
+            return
+        }
         val to = ms.coerceIn(0, durationMs())
         seekingTo = to
         seekRequest = to * si.sampleRate / 1000
@@ -324,14 +371,16 @@ internal class FlacEngine(
     }
 
     override fun positionMs(): Long {
+        pendingSeekMs?.let { return it }
+        seekingTo?.let { return it }
         val si = info ?: return startAtMs()
         if (!started) return startAtMs()
-        seekingTo?.let { return it }
         val frames = runStart + (out.framePosition - lineBase)
         return frames * 1000 / si.sampleRate
     }
 
     override fun durationMs(): Long = info?.let { it.totalSamples * 1000 / it.sampleRate } ?: 0
+    override fun audioRoute(): DesktopAudioOutput.Route? = out.route
 
     override fun setVolume(v: Double) {
         volume = v.coerceIn(0.0, 1.0)
@@ -342,7 +391,8 @@ internal class FlacEngine(
     private fun applyVolume() {
         if (info == null) return
         val db = if (volume <= 0.0) -80f else (20 * log10(volume)).toFloat()
-        softGain = if (out.setGainDb(db)) 1.0 else volume
+        val hardware = out.setGainDb(db)
+        softGain = if (hardware && volume > 0.0) 1.0 else volume
     }
 
     override fun dispose() {

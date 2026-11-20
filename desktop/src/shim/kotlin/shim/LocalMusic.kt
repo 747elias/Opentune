@@ -1,6 +1,6 @@
 package com.opentune.data.local
 
-/** The phone's music files are read through MediaStore; on the desktop there are none, only the id prefix. */
+/** Shared identity for tracks stored on the device. Desktop folder scanning uses the filesystem. */
 object LocalMusic {
     const val PREFIX = "local:"
 

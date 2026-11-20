@@ -4,7 +4,7 @@
 # by hand for a release that's already out: Actions > Desktop release > Run workflow, with its tag.
 #
 # Each file is named for the release and the system it's for, e.g.
-#   OpenTune-v1.0.4-windows-x64-setup.exe   OpenTune-v1.0.4-macos-arm64.dmg
+#   OpenTune-v1.0.4-windows-x64-setup.exe   OpenTune-v1.0.4-macos-universal.dmg
 #   OpenTune-v1.0.4-linux-x86_64.AppImage   OpenTune-v1.0.4-linux-amd64.deb
 # Running again for the same tag replaces them.
 name: Desktop release
@@ -20,7 +20,7 @@ on:
         required: true
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: desktop-release-${{ github.event.inputs.tag || github.event.workflow_run.head_sha }}
@@ -36,6 +36,8 @@ jobs:
     outputs:
       tag: ${{ steps.find.outputs.tag }}
       ref: ${{ steps.find.outputs.ref }}
+      macos: ${{ steps.find.outputs.macos }}
+      windows_linux: ${{ steps.find.outputs.windows_linux }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -52,22 +54,33 @@ jobs:
             echo "::notice::No release $tag to attach desktop downloads to."
             exit 0
           fi
-          # Release also runs on later pushes to main, skipping a version already out. Those don't
-          # rebuild a release's desktop files; running this by hand does, and replaces them.
-          if [ -z "$INPUT_TAG" ] && gh release view "$tag" --json assets -q '.assets[].name' | grep -q -- '-windows-x64-setup\.exe$'; then
-            echo "::notice::$tag already has its desktop downloads."
-            exit 0
-          fi
           git fetch --tags --force --quiet
           # Built from the commit the release's tag points at, so the desktop app is that version's.
           ref="$(git rev-list -n 1 "$tag")"
+          macos=true
+          windows_linux=true
+          if [ -z "$INPUT_TAG" ]; then
+            # A subsequent push can fill in a missing platform without replacing the others.
+            assets="$(gh release view "$tag" --json assets -q '.assets[].name')"
+            if grep -Fxq -- "OpenTune-$tag-macos-universal.dmg" <<< "$assets"; then
+              macos=false
+            fi
+            if grep -Fxq -- "OpenTune-$tag-windows-x64-setup.exe" <<< "$assets" &&
+               grep -Fxq -- "OpenTune-$tag-linux-amd64.deb" <<< "$assets"; then
+              windows_linux=false
+            fi
+          fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "macos=$macos" >> "$GITHUB_OUTPUT"
+          echo "windows_linux=$windows_linux" >> "$GITHUB_OUTPUT"
           echo "Desktop downloads for $tag from ${ref:0:7}"
 
   desktop:
     needs: release
-    if: needs.release.outputs.tag != ''
+    if: needs.release.outputs.windows_linux == 'true'
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       matrix:
@@ -76,8 +89,6 @@ jobs:
             tasks: :desktop:packageDeb :desktop:packageRpm
           - os: windows-latest
             tasks: :desktop:packageMsi :desktop:packageExe
-          - os: macos-latest
-            tasks: :desktop:packageDmg
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     env:
@@ -109,9 +120,7 @@ jobs:
       - name: Packaged app self-check
         if: runner.os != 'Windows'
         shell: bash
-        run: |
-          app=desktop/build/compose/binaries/main/app
-          if [ -d "$app/OpenTune.app" ]; then "$app/OpenTune.app/Contents/MacOS/OpenTune" --self-check; else "$app/OpenTune/bin/OpenTune" --self-check; fi
+        run: desktop/build/compose/binaries/main/app/OpenTune/bin/OpenTune --self-check
       - name: Name the files for the release
         shell: bash
         run: |
@@ -129,9 +138,6 @@ jobs:
               cp "$bin"/exe/*.exe "$out/OpenTune-$TAG-windows-x64-setup.exe"
               pwsh -NoProfile -Command "Compress-Archive -Path '$bin/app/OpenTune' -DestinationPath '$out/OpenTune-$TAG-windows-x64-portable.zip'"
               ;;
-            macOS)
-              cp "$bin"/dmg/*.dmg "$out/OpenTune-$TAG-macos-$(uname -m | sed 's/x86_64/x64/').dmg"
-              ;;
           esac
           ls -la "$out"
       - name: Attach to the release
@@ -139,3 +145,37 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload "$TAG" "$RUNNER_TEMP"/desktop/* --clobber --repo "${{ github.repository }}"
+
+  macos:
+    needs: release
+    if: needs.release.outputs.macos == 'true'
+    uses: ./.github/workflows/desktop-macos.yml
+    with:
+      ref: ${{ needs.release.outputs.ref }}
+      tag: ${{ needs.release.outputs.tag }}
+    secrets:
+      LASTFM_API_KEY: ${{ secrets.LASTFM_API_KEY }}
+      LASTFM_API_SECRET: ${{ secrets.LASTFM_API_SECRET }}
+      DISCORD_APP_ID: ${{ secrets.DISCORD_APP_ID }}
+      MACOS_CERTIFICATE_BASE64: ${{ secrets.MACOS_CERTIFICATE_BASE64 }}
+      MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+      MACOS_NOTARY_KEY_BASE64: ${{ secrets.MACOS_NOTARY_KEY_BASE64 }}
+      MACOS_NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
+      MACOS_NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
+
+  publish-macos:
+    needs: [release, macos]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: macos-universal
+          path: ${{ runner.temp }}/macos-dmg
+      - name: Attach the verified DMG to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.release.outputs.tag }}
+        run: gh release upload "$TAG" "$RUNNER_TEMP/macos-dmg/OpenTune-$TAG-macos-universal.dmg" --clobber --repo "$GITHUB_REPOSITORY"

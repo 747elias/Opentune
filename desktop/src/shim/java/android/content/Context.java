@@ -20,6 +20,10 @@ public class Context {
         root.mkdirs();
     }
 
+    public Context getApplicationContext() {
+        return this;
+    }
+
     public File getFilesDir() {
         File f = new File(root, "files");
         f.mkdirs();
@@ -33,7 +37,8 @@ public class Context {
     }
 
     public synchronized SharedPreferences getSharedPreferences(String name, int mode) {
-        return prefs.computeIfAbsent(name, n -> new FilePreferences(new File(root, "prefs/" + n + ".properties")));
+        return prefs.computeIfAbsent(name, n -> new FilePreferences(new File(root, "prefs/" + n + ".properties"),
+                n.equals("account") || n.equals("listenbrainz") || n.equals("spotify")));
     }
 
     /** There are no Android system services here; callers take null as "not available". */

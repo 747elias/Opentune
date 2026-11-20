@@ -4,10 +4,8 @@
 // cannot pick up core's real ones.
 package com.opentune.data.download
 
-import java.io.File
+import com.opentune.desktop.OfflineDownloads
 
-/** No downloads on the desktop yet, so no lyrics saved with them. */
 object Downloads {
-    @Suppress("UNUSED_PARAMETER")
-    fun lyricsFileFor(videoId: String): File? = null
+    fun lyricsFileFor(videoId: String) = OfflineDownloads.lyricsFileFor(videoId)
 }

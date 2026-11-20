@@ -59,6 +59,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.opentune.data.model.Song
+import com.opentune.data.lyrics.LyricCardFormat
 import com.opentune.ui.components.FloatingCard
 import com.opentune.ui.components.SheetButton
 import com.opentune.ui.components.SheetTone
@@ -74,12 +75,12 @@ import kotlinx.coroutines.withContext
  * it's 9:16, the size Instagram and WhatsApp stories take.
  */
 object LyricCard {
-    const val WIDTH = 1080
-    const val HEIGHT = 1350
-    const val STORY_HEIGHT = 1920
-    const val MAX_LINES = 6
+    const val WIDTH = LyricCardFormat.WIDTH
+    const val HEIGHT = LyricCardFormat.POST_HEIGHT
+    const val STORY_HEIGHT = LyricCardFormat.STORY_HEIGHT
+    const val MAX_LINES = LyricCardFormat.MAX_LINES
 
-    fun height(story: Boolean) = if (story) STORY_HEIGHT else HEIGHT
+    fun height(story: Boolean) = LyricCardFormat.height(story)
 
     fun draw(cover: Bitmap?, lines: List<String>, title: String, artist: String, story: Boolean = false): Bitmap {
         val w = WIDTH.toFloat()
@@ -208,7 +209,7 @@ fun LyricCardSheet(song: Song, lines: List<String>, startAt: Int, onDismiss: () 
         cover = kotlinx.coroutines.withTimeoutOrNull(8_000) { runCatching { ShareCard.loadImage(context, song.thumbnailUrl, 720) }.getOrNull() }
         coverDone = true
     }
-    val chosen = picked.sorted().map { lines[it] }
+    val chosen = LyricCardFormat.selectedLines(lines, picked)
     LaunchedEffect(chosen, story, cover, coverDone) {
         preview = if (chosen.isEmpty() || !coverDone) null else withContext(Dispatchers.Default) { LyricCard.draw(cover, chosen, song.title, song.artist, story) }
     }

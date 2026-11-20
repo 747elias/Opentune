@@ -5,6 +5,7 @@ import com.opentune.data.Http
 import com.opentune.data.metadata.AppleTrackMetadataRepository
 import com.opentune.data.metadata.AppleWebToken
 import com.opentune.data.model.Song
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runInterruptible
 import kotlinx.serialization.json.Json
@@ -40,18 +41,28 @@ object AppleMotionArt {
 
     /** The animated cover of the album [song] is on, or null when Apple has none or the match isn't certain. */
     suspend fun forSong(song: Song, durationMs: Long): Motion? {
-        val release = runCatching { AppleTrackMetadataRepository.release(song, durationMs) }
-            .onFailure { Log.w(TAG, "catalogue match failed", it) }.getOrNull() ?: return null
+        val release = lookup("catalogue match failed") { AppleTrackMetadataRepository.release(song, durationMs) }
+            ?: return null
         val key = "${release.storefront}/${release.albumId}"
         synchronized(cache) { cache[key] }?.let { e ->
             if (e.motion != null || System.currentTimeMillis() - e.at < MISS_TTL_MS) return e.motion
         }
         val url = "$AMP/${release.storefront}/albums/${release.albumId}".toHttpUrl().newBuilder()
             .addQueryParameter("extend", "editorialVideo").build().toString()
-        val body = runCatching { read(url) }.onFailure { Log.w(TAG, "album read failed", it) }.getOrNull() ?: return null
-        val motion = motionOf(json.parseToJsonElement(body).jsonObject)
+        val response = lookup("album read failed") { read(url)?.let { json.parseToJsonElement(it).jsonObject } }
+            ?: return null
+        val motion = motionOf(response)
         synchronized(cache) { cache[key] = Entry(motion, System.currentTimeMillis()) }
         return motion
+    }
+
+    private suspend fun <T> lookup(message: String, block: suspend () -> T): T? = try {
+        block()
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (failure: Exception) {
+        Log.w(TAG, message, failure)
+        null
     }
 
     /** One catalogue read, with a fresh token once if Apple refuses the one held. */

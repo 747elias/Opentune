@@ -7,6 +7,7 @@ import com.opentune.data.covers.AlbumCovers
 import com.opentune.data.download.Downloads
 import com.opentune.data.history.History
 import com.opentune.data.innertube.InnerTubeXResolver
+import com.opentune.data.innertube.StreamResolver
 import com.opentune.data.innertube.UpgradedTracks
 import com.opentune.data.lastfm.LastFm
 import com.opentune.data.library.LibraryStore
@@ -75,7 +76,9 @@ object Core {
         java.io.File(app.filesDir, "waveforms").takeIf { it.exists() }?.let { dir -> Thread { dir.deleteRecursively() }.start() }
         com.opentune.data.podcasts.Podcasts.init(app)
         com.opentune.data.library.ResumePoints.init(app)
-        AlbumCovers.init(app)
+        AlbumCovers.init(app.filesDir) { uri ->
+            app.contentResolver.openInputStream(android.net.Uri.parse(uri))?.use { it.read() >= 0 } ?: false
+        }
         com.opentune.data.spotify.SpotifyWebPlayer.init(app)
         com.opentune.data.spotify.SpotifySync.init(app)
         AutoEq.init(app)
@@ -84,7 +87,8 @@ object Core {
         Downloads.init(app)
         if (phone) com.opentune.data.download.SmartDownloads.init(app)
         com.opentune.data.download.DownloadedLists.init(app)
-        AccountStore.init(app)
+        AccountStore.init(app, StreamResolver::onSessionChanged)
+        com.opentune.data.history.YouTubeHistory.init(StreamResolver::signatureTimestamp, MusicRepository::refreshHomeRecommendations)
         com.opentune.data.library.LibraryCache.init(app)
         // After library and account: it sends playlist changes still waiting, when signed in.
         com.opentune.data.library.PlaylistSync.init(app)

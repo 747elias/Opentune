@@ -25,32 +25,90 @@ val appVersionCode = Regex("""versionCode = (\d+)""").find(appBuild)!!.groupValu
 
 val coreSources = rootProject.file("core/src/main/java")
 val sharedFromCore = listOf(
+    "com/opentune/cast/CastServer.kt",
+    "com/opentune/cast/CastTarget.kt",
+    "com/opentune/cast/Chromecast.kt",
+    "com/opentune/cast/Dlna.kt",
+    "com/opentune/cast/DlnaDiscovery.kt",
+    "com/opentune/cast/Receiver.kt",
     "com/opentune/data/model/**",
+    "com/opentune/data/account/AccountStore.kt",
+    "com/opentune/data/account/SessionPairing.kt",
     "com/opentune/data/innertube/Innertube.kt",
     "com/opentune/data/innertube/InnertubeParser.kt",
     "com/opentune/data/innertube/PlayerClient.kt",
+    "com/opentune/data/comments/SongComments.kt",
     "com/opentune/data/podcasts/PodcastParser.kt",
     "com/opentune/data/podcasts/PodcastModels.kt",
+    "com/opentune/data/recognize/Signature.kt",
+    "com/opentune/data/recognize/Shazam.kt",
+    "com/opentune/data/sponsorblock/SponsorBlock.kt",
+    "com/opentune/data/listenbrainz/ListenBrainz.kt",
+    "com/opentune/data/spotify/Spotify.kt",
+    "com/opentune/data/spotify/TrackMatch.kt",
+    "com/opentune/data/spotify/PlaylistCsv.kt",
+    "com/opentune/data/spotify/ExportedPlaylists.kt",
+    "com/opentune/data/spotify/YouTubePlaylists.kt",
+    "com/opentune/data/autoeq/AutoEq.kt",
+    "com/opentune/playback/dsp/Space3D.kt",
+    "com/opentune/data/podcasts/Podcasts.kt",
+    "com/opentune/data/audiobooks/Audiobooks.kt",
+    "com/opentune/data/radio/Radio.kt",
+    "com/opentune/data/reco/JioSaavnRadio.kt",
+    "com/opentune/data/reco/SpotifyRadio.kt",
     "com/opentune/data/Http.kt",
     "com/opentune/data/DebugLog.kt",
     "com/opentune/data/AppLog.kt",
     "com/opentune/data/TrackIds.kt",
+    "com/opentune/data/ContentFilter.kt",
+    "com/opentune/data/RoundRobin.kt",
+    "com/opentune/data/download/RangedFetch.kt",
+    "com/opentune/data/download/SmartDownloadRules.kt",
     "com/opentune/data/settings/AppSettings.kt",
+    "com/opentune/data/together/Messages.kt",
+    "com/opentune/data/together/Nostr.kt",
+    "com/opentune/data/together/RoomCode.kt",
+    "com/opentune/data/together/RoomProtocol.kt",
+    "com/opentune/data/together/RoomSession.kt",
+    "com/opentune/data/together/Schnorr.kt",
+    "com/opentune/data/together/SpeechGate.kt",
+    "com/opentune/data/together/VoiceFrames.kt",
     "com/opentune/data/history/ListeningHistoryTarget.kt",
+    "com/opentune/data/history/YouTubeHistory.kt",
+    "com/opentune/data/history/YouTubeHistorySession.kt",
     // The phone's listening stats, daily mixes and speed dial, fed from the desktop's own plays.
     "com/opentune/data/history/History.kt",
     "com/opentune/data/history/Wrapped.kt",
     "com/opentune/data/history/DailyMixes.kt",
+    "com/opentune/data/history/Daylist.kt",
+    "com/opentune/data/history/GenreMixes.kt",
+    "com/opentune/data/history/MixSnapshots.kt",
+    "com/opentune/data/reco/GenreDiscover.kt",
     "com/opentune/data/history/SpeedDial.kt",
     "com/opentune/data/history/ListenedCollections.kt",
     "com/opentune/data/library/Hidden.kt",
+    "com/opentune/data/library/ResumePoints.kt",
+    "com/opentune/data/library/SmartPlaylistRules.kt",
+    "com/opentune/data/releases/ArtistReleaseRules.kt",
     "com/opentune/data/SavedFile.kt",
+    "com/opentune/data/LoudnessStore.kt",
+    "com/opentune/playback/mix/MixAnalysis.kt",
+    "com/opentune/playback/SleepTimer.kt",
     // Artist pages: Apple Music's header photo and the artist's signature.
     "com/opentune/data/covers/AppleArtistArt.kt",
+    "com/opentune/data/covers/AlbumCovers.kt",
+    "com/opentune/data/covers/AppleMotionArt.kt",
+    "com/opentune/data/metadata/AppleTrackMetadata.kt",
+    "com/opentune/data/metadata/ArtistGenres.kt",
+    "com/opentune/data/metadata/AppleSearchGate.kt",
+    "com/opentune/data/metadata/TrackMetadata.kt",
+    "com/opentune/data/lossless/LosslessHttp.kt",
     "com/opentune/data/covers/ArtistSignatures.kt",
     // Lyrics from every source the phone asks, without the romanizer (Android's ICU).
     "com/opentune/data/lyrics/Lyrics.kt",
+    "com/opentune/data/lyrics/LyricCardFormat.kt",
     "com/opentune/data/lyrics/LyricsRepository.kt",
+    "com/opentune/data/lyrics/Romanization.kt",
     "com/opentune/data/lyrics/LyricsQuality.kt",
     "com/opentune/data/lyrics/SongParts.kt",
     "com/opentune/data/lyrics/BetterLyrics.kt",
@@ -80,6 +138,9 @@ val sharedFromCore = listOf(
  * labels, which reach into Android, have desktop stand-ins in src/shim.
  */
 val appSources = rootProject.file("app/src/main/java")
+tasks.processResources {
+    from(rootProject.file("core/src/main/assets/i18n")) { into("i18n") }
+}
 val sharedFromApp = listOf(
     "com/opentune/ui/BottomChrome.kt",
     "com/opentune/ui/SideChrome.kt",
@@ -217,6 +278,7 @@ dependencies {
     // YouTube's player code runs on GraalJS, with Rhino as the fallback (see JavaScript.java).
     implementation("org.graalvm.polyglot:polyglot:24.1.2")
     implementation("org.graalvm.polyglot:js-community:24.1.2")
+    implementation("org.graalvm.shadowed:icu4j:24.1.2")
     implementation("org.mozilla:rhino:1.8.1")
     implementation("org.mozilla:rhino-engine:1.8.1")
 
@@ -225,6 +287,7 @@ dependencies {
     // The library (liked songs, playlists, every play) in SQLite.
     implementation("org.xerial:sqlite-jdbc:3.47.1.0")
     implementation("org.json:json:20240303")
+    implementation("org.jmdns:jmdns:3.6.5")
     implementation("org.jflac:jflac-codec:1.5.2")
     implementation("com.google.zxing:core:3.5.4")
     // Windows' own frame and materials under the title bar the app draws: user32 and dwmapi, from Kotlin.

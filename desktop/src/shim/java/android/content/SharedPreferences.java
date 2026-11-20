@@ -2,6 +2,7 @@ package android.content;
 
 /** Android's key-value store, as the shared code uses it. */
 public interface SharedPreferences {
+    java.util.Map<String, ?> getAll();
     String getString(String key, String defValue);
     int getInt(String key, int defValue);
     long getLong(String key, long defValue);

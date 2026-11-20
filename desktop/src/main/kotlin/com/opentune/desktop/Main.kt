@@ -1,7 +1,20 @@
 package com.opentune.desktop
 
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyShortcut
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.MenuBar
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberWindowState
@@ -9,19 +22,50 @@ import coil3.ImageLoader
 import coil3.SingletonImageLoader
 import coil3.network.okhttp.OkHttpNetworkFetcherFactory
 import com.opentune.data.Http
+import com.opentune.data.local.LocalMusic
 import com.opentune.data.settings.AppSettings
 import com.opentune.data.subsonic.Subsonic
+import java.awt.Frame
+import java.awt.event.WindowEvent
 import java.io.File
+import java.sql.DriverManager
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeout
+import org.jetbrains.skia.Color
+import org.jetbrains.skia.Surface
 
 /** Where the desktop keeps what it saves: ~/.opentune, read through the shared code's Context. */
 internal val appContext by lazy { android.content.Context(File(System.getProperty("user.home"), ".opentune")) }
 
 fun main(args: Array<String>) {
     if ("--self-check" in args) return selfCheck()
+    val uiCheck = "--ui-check" in args
+    val finderCheck = if (uiCheck) args.firstOrNull { it.startsWith("--ui-check-finder=") }
+        ?.substringAfter('=')?.let { LocalMusic.PREFIX + File(it).canonicalFile.toURI().toASCIIString() } else null
+    if (uiCheck) System.setProperty("user.home", java.nio.file.Files.createTempDirectory("opentune-ui-check-").toString())
     // The shared settings and music server, as the phone starts them.
     AppSettings.init(appContext)
+    DesktopLanguage.init()
     Subsonic.init(appContext)
     com.opentune.data.config.RemoteConfig.init(appContext)
+    DesktopAccount.init(appContext)
+    DesktopSpotify.init(appContext)
+    com.opentune.data.radio.Radio.init(appContext)
+    com.opentune.data.podcasts.Podcasts.init(appContext)
+    com.opentune.data.audiobooks.Audiobooks.init(appContext)
+    com.opentune.data.library.ResumePoints.init(appContext)
+    com.opentune.data.listenbrainz.ListenBrainz.init(appContext)
+    com.opentune.data.autoeq.AutoEq.init(appContext)
+    com.opentune.data.covers.AlbumCovers.init(appContext.filesDir)
+    OfflineDownloads.resumePending()
+    com.opentune.data.metadata.ArtistGenres.init(appContext)
+    com.opentune.data.history.MixSnapshots.init(appContext)
+    DesktopSmartDownloads.start()
+    DesktopSession.start()
+    DesktopPlaybackServices.start()
+    DesktopArtistReleases.start()
+    MacUpdates.start()
     // What's playing, to the listener's Discord profile and Last.fm scrobbles, when they've turned them on.
     DiscordPresence.start()
     LastFmDesktop.start()
@@ -34,8 +78,39 @@ fun main(args: Array<String>) {
             .build()
     }
     application {
+        var visible by remember { mutableStateOf(true) }
+        var audioError by remember { mutableStateOf(false) }
+        val scope = rememberCoroutineScope()
+        val showWindow = {
+            visible = true
+            DesktopWindow.window?.let { frame ->
+                frame.extendedState = frame.extendedState and Frame.ICONIFIED.inv()
+                if (frame.isShowing) frame.toFront()
+            }
+            Unit
+        }
+        val quit = {
+            DesktopSession.flush()
+            com.opentune.data.radio.Radio.flush()
+            com.opentune.data.podcasts.Podcasts.flush()
+            DesktopRooms.leave()
+            exitApplication()
+        }
+        val closeWindow = { if (DesktopLifecycle.canReopen) visible = false else quit() }
+        DisposableEffect(Unit) {
+            val lifecycle = DesktopLifecycle.install(args, showWindow, quit)
+            DesktopLinks.install(args, showWindow)
+            DesktopArtistReleases.installNotifications(showWindow)
+            onDispose { lifecycle.close() }
+        }
+        LaunchedEffect(Unit) {
+            DesktopLifecycle.audioRequests.collect { files ->
+                audioError = !DesktopLifecycle.playAudio(files)
+            }
+        }
         Window(
-            onCloseRequest = ::exitApplication,
+            onCloseRequest = closeWindow,
+            visible = visible,
             title = "OpenTune",
             icon = rememberLogo(Logo.APP),
             state = rememberWindowState(size = DpSize(1180.dp, 760.dp)),
@@ -47,7 +122,28 @@ fun main(args: Array<String>) {
             window.minimumSize = java.awt.Dimension(760, 520)
             DesktopWindow.style(window)
             DesktopWindow.window = window
-            DesktopWindow.close = ::exitApplication
+            DesktopWindow.close = closeWindow
+            LaunchedEffect(visible) { if (visible) window.toFront() }
+            LaunchedEffect(Unit) { MacMediaControls.start() }
+            MenuBar {
+                Menu("File") {
+                    if (DesktopWindow.isMac) Item("Open Audio Files…", onClick = {
+                        scope.launch { DesktopLifecycle.openAudio(DesktopLocalMusic.chooseFiles(folders = false)) }
+                    }, shortcut = KeyShortcut(Key.O, meta = true))
+                    Item("Open Link…", onClick = DesktopLinks::requestOpen,
+                        shortcut = if (DesktopWindow.isMac) KeyShortcut(Key.L, meta = true) else KeyShortcut(Key.O, ctrl = true))
+                    if (DesktopWindow.isMac) Item("Close Window", onClick = closeWindow,
+                        shortcut = KeyShortcut(Key.W, meta = true))
+                }
+                Menu("Playback") {
+                    Item("Play or Pause", onClick = Player::toggle,
+                        shortcut = KeyShortcut(Key.P, shift = true, meta = DesktopWindow.isMac, ctrl = !DesktopWindow.isMac))
+                    Item("Next Track", onClick = Player::next,
+                        shortcut = KeyShortcut(Key.DirectionRight, alt = true, meta = DesktopWindow.isMac, ctrl = !DesktopWindow.isMac))
+                    Item("Previous Track", onClick = Player::previous,
+                        shortcut = KeyShortcut(Key.DirectionLeft, alt = true, meta = DesktopWindow.isMac, ctrl = !DesktopWindow.isMac))
+                }
+            }
             if (WindowsFrame.drawn) androidx.compose.runtime.LaunchedEffect(Unit) {
                 // The handle exists once the window is on screen.
                 repeat(20) {
@@ -55,29 +151,83 @@ fun main(args: Array<String>) {
                     kotlinx.coroutines.delay(100)
                 }
             }
-            DesktopApp()
+            DesktopApp(startTab = if (uiCheck) Tab.SETTINGS else Tab.HOME)
+            if (audioError) DesktopTheme {
+                AlertDialog(
+                    onDismissRequest = { audioError = false },
+                    title = { Text("Couldn’t open audio files") },
+                    text = { Text("Choose a readable audio file, such as MP3, M4A, FLAC or WAV.") },
+                    confirmButton = { TextButton(onClick = { audioError = false }) { Text("OK") } },
+                )
+            }
+            if (uiCheck) LaunchedEffect(Unit) {
+                try {
+                    withTimeout(15_000) {
+                        while (!window.isShowing) delay(50)
+                        delay(1_200)
+                        if (DesktopWindow.isMac) {
+                            check(DesktopLifecycle.canReopen) { "the macOS reopen handler is unavailable" }
+                            window.dispatchEvent(WindowEvent(window, WindowEvent.WINDOW_CLOSING))
+                            while (window.isShowing) delay(50)
+                            showWindow()
+                            while (!window.isShowing) delay(50)
+                            println("OpenTune window: continued after close and reopen")
+                        }
+                        if (finderCheck != null) {
+                            while (Player.current?.videoId != finderCheck) delay(50)
+                            check(Library.localTracks.value.any { it.videoId == finderCheck })
+                            println("OpenTune Finder audio: opened")
+                        }
+                    }
+                    println("OpenTune window: ready")
+                    kotlin.system.exitProcess(0)
+                } catch (failure: Exception) {
+                    System.err.println("OpenTune window check failed: ${failure.message}")
+                    kotlin.system.exitProcess(1)
+                }
+            }
         }
     }
 }
 
 /**
- * `OpenTune --self-check`: loads what the installer must carry (FFmpeg,
- * GraalJS, SQLite), prints what it found and exits, failing if any is
- * missing. For checking a packaged build, where the trimmed Java runtime
- * could be short of a module the tests' full one has.
+ * `OpenTune --self-check`: exercises the packaged runtime and native libraries
+ * without opening a window, using the network or changing the user's library.
  */
 private fun selfCheck() {
+    println("OpenTune: ${System.getProperty("os.name")} ${System.getProperty("os.version")} (${System.getProperty("os.arch")})")
     val checks = listOf(
+        "Skia" to {
+            Surface.makeRasterN32Premul(8, 8).use { it.canvas.clear(Color.BLACK) }
+            "rendered"
+        },
         "FFmpeg" to { check(Ffmpeg.available) { "didn't load" }; "loaded" },
         "GraalJS" to {
             val got = org.schabi.newpipe.extractor.utils.JavaScript.run("var f = (a) => a?.at(-1) ?? 'x';", "f", "abc")
             check(got == "c") { "got $got" }
             "ran"
         },
-        "SQLite" to { "${Library.playlists.value.size} playlists, ${Library.liked.value.size} liked" },
+        "SQLite" to {
+            DriverManager.getConnection("jdbc:sqlite::memory:").use { db ->
+                db.createStatement().use { statement ->
+                    statement.executeQuery("SELECT sqlite_version()").use { row ->
+                        check(row.next()) { "no version returned" }
+                        row.getString(1)
+                    }
+                }
+            }
+        },
     )
+    // Query the media backend directly so the check can run without the JavaFX GUI toolkit.
+    val platformChecks = if (DesktopWindow.isMac) listOfNotNull("JavaFX media" to {
+        System.setProperty("jfxmedia.platforms", "OSXPlatform")
+        check(com.sun.media.jfxmedia.MediaManager.canPlayContentType("audio/x-m4a")) { "AVFoundation AAC unavailable" }
+        "AVFoundation loaded"
+    }, "macOS MediaPlayer" to MacMediaControls::checkPackaged,
+        if (MacYouTubeLogin.available) "macOS YouTube Music sign-in" to MacYouTubeLogin::selfCheck else null,
+    ) else emptyList()
     var failed = false
-    for ((name, run) in checks) {
+    for ((name, run) in checks + platformChecks) {
         val result = runCatching(run)
         println("$name: " + result.fold({ "ok, $it" }, { failed = true; "FAILED, $it" }))
     }

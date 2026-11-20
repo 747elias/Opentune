@@ -2,8 +2,8 @@ package com.opentune.data.reco
 
 import com.opentune.data.DebugLog as Log
 import com.opentune.data.Http
-import com.opentune.data.spotify.PlaylistImport
 import com.opentune.data.spotify.Spotify
+import com.opentune.data.spotify.TrackMatch
 import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.Dispatchers
@@ -41,12 +41,12 @@ object JioSaavnRadio {
         val first = recommended(seed)
         // JioSaavn lists about sixteen; the first pick's own list tops it up.
         val more = first.firstOrNull()?.let { runCatching { recommended(it.id) }.getOrDefault(emptyList()) }.orEmpty()
-        val seedKey = PlaylistImport.key(title)
+        val seedKey = TrackMatch.key(title)
         return (first + more)
             .filter { it.id != seed }
             .filterNot { EDITS.containsMatchIn(it.track.title) }
             // The same song again under another uploader or as "Husn x Something".
-            .filterNot { seedKey.isNotEmpty() && PlaylistImport.key(it.track.title).contains(seedKey) }
+            .filterNot { seedKey.isNotEmpty() && TrackMatch.key(it.track.title).contains(seedKey) }
             .distinctBy { it.id }
             .map { it.track }
     }
@@ -97,12 +97,12 @@ object JioSaavnRadio {
 
     /** The search result whose title and artist match, by the same rules as importing a playlist. */
     internal fun bestMatch(results: List<Pick>, title: String, artist: String): String? {
-        val wantTitle = PlaylistImport.key(title)
-        val wantArtist = PlaylistImport.key(artist)
+        val wantTitle = TrackMatch.key(title)
+        val wantArtist = TrackMatch.key(artist)
         return results.firstOrNull { p ->
-            val t = PlaylistImport.key(p.track.title)
+            val t = TrackMatch.key(p.track.title)
             val titleOk = t == wantTitle || (t.isNotEmpty() && wantTitle.isNotEmpty() && (t.contains(wantTitle) || wantTitle.contains(t)))
-            val artistOk = wantArtist.isEmpty() || p.track.artists.any { a -> PlaylistImport.key(a).let { it.isNotEmpty() && (wantArtist.contains(it) || it.contains(wantArtist)) } }
+            val artistOk = wantArtist.isEmpty() || p.track.artists.any { a -> TrackMatch.key(a).let { it.isNotEmpty() && (wantArtist.contains(it) || it.contains(wantArtist)) } }
             titleOk && artistOk
         }?.id
     }

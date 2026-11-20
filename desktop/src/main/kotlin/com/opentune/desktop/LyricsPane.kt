@@ -23,14 +23,16 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.rounded.FormatQuote
 import androidx.compose.material.icons.rounded.Remove
+import androidx.compose.material.icons.rounded.Translate
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
+import com.opentune.ui.theme.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -38,6 +40,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -53,9 +56,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.opentune.data.lyrics.LyricLine
 import com.opentune.data.lyrics.Lyrics
 import com.opentune.data.lyrics.LyricsRepository
+import com.opentune.data.lyrics.Romanization
 import com.opentune.data.lyrics.SongParts
 import com.opentune.data.lyrics.VOICE_SECOND
 import com.opentune.data.lyrics.activeIndex
@@ -64,8 +69,11 @@ import com.opentune.data.model.Song
 import com.opentune.data.settings.AppSettings
 import com.opentune.data.settings.LyricsSource
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.withContext
+import org.graalvm.shadowed.com.ibm.icu.text.Transliterator
 
 /** What the lyrics pane shows for the song playing. */
 internal sealed interface LyricsState {
@@ -108,13 +116,32 @@ internal fun LyricsPane(song: Song, modifier: Modifier = Modifier) {
     val settings by AppSettings.lyrics.collectAsState()
     val lyrics = (state as? LyricsState.Found)?.lyrics
     val offset = lyricsOffset(settings.offsets[song.videoId], lyrics)
+    val quoteLines = remember(lyrics) {
+        when (lyrics) {
+            is Lyrics.Synced -> lyrics.lines.map(::lyricDisplayText)
+            is Lyrics.Plain -> lyrics.text.lines().filter(String::isNotBlank)
+            null -> emptyList()
+        }
+    }
+    var quoteAt by remember(song.videoId, lyrics) { mutableStateOf<Int?>(null) }
+    val texts = remember(lyrics, quoteLines) {
+        (lyrics as? Lyrics.Plain)?.text?.lines() ?: quoteLines
+    }
+    val romanized by produceState<List<String?>>(emptyList(), texts, settings.romanize) {
+        value = emptyList()
+        if (settings.romanize && texts.isNotEmpty()) {
+            value = withContext(Dispatchers.Default) { romanizeLyrics(texts) }
+        }
+    }
     Column(modifier) {
-        LyricsHeader(song, lyrics, offset)
+        LyricsHeader(song, lyrics, offset, quoteLines.isNotEmpty()) {
+            quoteAt = (lyrics as? Lyrics.Synced)?.lines?.activeIndex(Player.positionMs() + offset)?.coerceAtLeast(0) ?: 0
+        }
         Box(Modifier.weight(1f).fillMaxWidth()) {
             when {
                 state is LyricsState.Loading -> CircularProgressIndicator(Modifier.align(Alignment.Center))
-                lyrics is Lyrics.Synced -> SyncedLyrics(song, lyrics, offset)
-                lyrics is Lyrics.Plain -> PlainLyrics(lyrics.text)
+                lyrics is Lyrics.Synced -> SyncedLyrics(song, lyrics, offset, romanized)
+                lyrics is Lyrics.Plain -> PlainLyrics(texts, romanized)
                 else -> Text(
                     "No lyrics for this song.",
                     style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -123,10 +150,11 @@ internal fun LyricsPane(song: Song, modifier: Modifier = Modifier) {
             }
         }
     }
+    quoteAt?.let { DesktopLyricCard(song, quoteLines, it) { quoteAt = null } }
 }
 
 @Composable
-private fun LyricsHeader(song: Song, lyrics: Lyrics?, offset: Long) {
+private fun LyricsHeader(song: Song, lyrics: Lyrics?, offset: Long, canQuote: Boolean, onQuote: () -> Unit) {
     val scheme = MaterialTheme.colorScheme
     val settings by AppSettings.lyrics.collectAsState()
     var picking by remember { mutableStateOf(false) }
@@ -152,6 +180,11 @@ private fun LyricsHeader(song: Song, lyrics: Lyrics?, offset: Long) {
             }
         }
         Spacer(Modifier.weight(1f))
+        if (lyrics != null) IconButton(onClick = { AppSettings.updateLyrics { it.copy(romanize = !it.romanize) } }) {
+            Icon(Icons.Rounded.Translate, if (settings.romanize) "Turn off romanization" else "Show romanized lyrics",
+                Modifier.size(20.dp), tint = if (settings.romanize) scheme.primary else scheme.onSurfaceVariant)
+        }
+        if (canQuote) IconButton(onClick = onQuote) { Icon(Icons.Rounded.FormatQuote, "Share lyrics", Modifier.size(20.dp)) }
         if (lyrics is Lyrics.Synced) {
             val choruses = remember(lyrics) { SongParts.choruses(lyrics) }
             if (choruses.isNotEmpty()) {
@@ -183,7 +216,7 @@ private fun LyricsHeader(song: Song, lyrics: Lyrics?, offset: Long) {
 }
 
 @Composable
-private fun SyncedLyrics(song: Song, lyrics: Lyrics.Synced, offset: Long) {
+private fun SyncedLyrics(song: Song, lyrics: Lyrics.Synced, offset: Long, romanized: List<String?>) {
     var position by remember(song.videoId) { mutableLongStateOf(0L) }
     LaunchedEffect(song.videoId) {
         while (true) {
@@ -209,13 +242,15 @@ private fun SyncedLyrics(song: Song, lyrics: Lyrics.Synced, offset: Long) {
         itemsIndexed(lyrics.lines, key = { i, l -> "$i:${l.startMs}" }) { i, line ->
             // Only the line being sung follows the clock; the rest stay as they are, so the
             // 25-a-second position updates redraw one row rather than the whole list.
-            LyricRow(line, i == active, if (i == active) at else 0L) { Player.seekTo((line.startMs - offset).coerceAtLeast(0)) }
+            LyricRow(line, i == active, if (i == active) at else 0L, romanized.getOrNull(i)) {
+                Player.seekTo((line.startMs - offset).coerceAtLeast(0))
+            }
         }
     }
 }
 
 @Composable
-private fun LyricRow(line: LyricLine, active: Boolean, at: Long, onClick: () -> Unit) {
+private fun LyricRow(line: LyricLine, active: Boolean, at: Long, romanized: String?, onClick: () -> Unit) {
     val scheme = MaterialTheme.colorScheme
     val lit = scheme.onSurface
     val dim = scheme.onSurface.copy(alpha = 0.32f)
@@ -250,6 +285,10 @@ private fun LyricRow(line: LyricLine, active: Boolean, at: Long, onClick: () -> 
             },
             textAlign = if (second) TextAlign.End else TextAlign.Start,
         )
+        romanized?.let {
+            Text(it, style = MaterialTheme.typography.bodyLarge, color = ink.copy(alpha = ink.alpha * 0.7f),
+                modifier = Modifier.padding(top = 2.dp))
+        }
         line.background?.let {
             Text(it, style = MaterialTheme.typography.titleMedium, color = if (active) lit.copy(alpha = 0.7f) else dim, modifier = Modifier.padding(top = 2.dp))
         }
@@ -257,10 +296,20 @@ private fun LyricRow(line: LyricLine, active: Boolean, at: Long, onClick: () -> 
 }
 
 @Composable
-private fun PlainLyrics(text: String) {
+private fun PlainLyrics(lines: List<String>, romanized: List<String?>) {
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 16.dp)) {
         Text(
-            text, style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.85f),
+            remember(lines, romanized) { buildAnnotatedString {
+                lines.forEachIndexed { index, line ->
+                    if (index > 0) append('\n')
+                    append(line)
+                    romanized.getOrNull(index)?.let { reading ->
+                        append('\n')
+                        withStyle(SpanStyle(fontSize = 15.sp)) { append(reading) }
+                    }
+                }
+            } },
+            style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.85f),
             lineHeight = MaterialTheme.typography.titleLarge.lineHeight * 1.2f,
         )
         Text(
@@ -269,6 +318,14 @@ private fun PlainLyrics(text: String) {
         )
     }
 }
+
+private val desktopRomanizer by lazy {
+    val any = Transliterator.getInstance("Any-Latin; Latin-ASCII")
+    val han = Transliterator.getInstance("Han-Latin; Latin-ASCII")
+    Romanization({ synchronized(any) { any.transliterate(it) } }, { synchronized(han) { han.transliterate(it) } })
+}
+
+internal fun romanizeLyrics(lines: List<String>): List<String?> = desktopRomanizer.lines(lines)
 
 /** Timed syllables already contain their intended spacing; never insert extra spaces. */
 internal fun lyricDisplayText(line: LyricLine): String =

@@ -1328,9 +1328,12 @@ object Innertube {
     suspend fun webContinuation(token: String): JsonObject = postWeb("next") { put("continuation", token) }
 
     /** Posts [text] as a comment, with the parameters YouTube gave the signed-in comment box. */
-    suspend fun createComment(params: String, text: String): JsonObject = postWeb("comment/create_comment", attempts = 1) {
-        put("commentText", text)
-        put("createCommentParams", params)
+    suspend fun createComment(params: String, text: String): JsonObject {
+        requireSession()
+        return postWeb("comment/create_comment", attempts = 1) {
+            put("commentText", text)
+            put("createCommentParams", params)
+        }
     }
 
     /**

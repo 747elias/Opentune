@@ -59,7 +59,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
+import com.opentune.ui.theme.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
@@ -153,10 +153,22 @@ internal fun Artwork(url: String?, modifier: Modifier, shape: Shape) {
  * beside the cover.
  */
 @Composable
-internal fun NowPlaying(song: Song, docked: Boolean, onClose: () -> Unit) {
+internal fun NowPlaying(track: Song, docked: Boolean, onClose: () -> Unit) {
     var showLyrics by remember { mutableStateOf(false) }
     val playing by Player.playing.collectAsState()
     val theme by AppSettings.theme.collectAsState()
+    val preferences by AppSettings.ui.collectAsState()
+    val duration by Player.durationOf.collectAsState()
+    val length = duration.takeIf { it.first == track.videoId }?.second?.takeIf { it > 0 }
+        ?: (track.durationText?.let(Player::seconds)?.times(1000)?.toLong() ?: 0)
+    val cover by androidx.compose.runtime.produceState(track.thumbnailUrl, track.videoId, preferences.albumCovers, duration) {
+        value = track.thumbnailUrl
+        if (preferences.albumCovers) {
+            value = com.opentune.data.covers.AlbumCovers.cached(track)
+                ?: com.opentune.data.covers.AlbumCovers.coverFor(track, length) ?: track.thumbnailUrl
+        }
+    }
+    val song = if (cover == track.thumbnailUrl) track else track.copy(thumbnailUrl = cover)
     PlayerTheme(seed = rememberArtworkSeed(song.thumbnailUrl)) {
         // Its own ink: the player is dark whatever the window around it is.
         CompositionLocalProvider(LocalContentColor provides MaterialTheme.colorScheme.onSurface) {
@@ -170,7 +182,7 @@ internal fun NowPlaying(song: Song, docked: Boolean, onClose: () -> Unit) {
                     Row(Modifier.fillMaxSize().padding(horizontal = 48.dp, vertical = 24.dp), verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f).fillMaxHeight().widthIn(max = 560.dp)) {
                             PlayerHeader(song, docked, onClose)
-                            Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) { BigCover(song, playing) }
+                            Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) { BigCover(song, playing, length, preferences) }
                             PlayerFoot(song, showLyrics = true, onLyrics = null)
                         }
                         Spacer(Modifier.width(48.dp))
@@ -190,13 +202,15 @@ internal fun NowPlaying(song: Song, docked: Boolean, onClose: () -> Unit) {
                             contentAlignment = Alignment.Center,
                         ) { lyrics ->
                             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                                if (lyrics) LyricsPane(song, Modifier.fillMaxSize()) else BigCover(song, playing)
+                                if (lyrics) LyricsPane(song, Modifier.fillMaxSize()) else BigCover(song, playing, length, preferences)
                             }
                         }
                         PlayerFoot(song, showLyrics) { showLyrics = !showLyrics }
                     }
                 }
             }
+            val windDown by com.opentune.playback.SleepTimer.windDown.collectAsState()
+            Box(Modifier.matchParentSize().graphicsLayer { alpha = windDown * 0.55f }.background(Color.Black))
         }
         }
     }
@@ -362,7 +376,7 @@ private fun PlayerHeader(song: Song, docked: Boolean, onClose: () -> Unit) {
 
 /** The cover, as large as fits, easing a little smaller while paused and crossfading between songs. */
 @Composable
-private fun BigCover(song: Song, playing: Boolean) {
+private fun BigCover(song: Song, playing: Boolean, durationMs: Long, preferences: com.opentune.data.settings.InterfaceSettings) {
     val scale by animateFloatAsState(if (playing) 1f else 0.86f, spring(dampingRatio = 0.7f, stiffness = 300f), label = "coverScale")
     BoxWithConstraints(Modifier.fillMaxSize().padding(vertical = 12.dp), contentAlignment = Alignment.Center) {
         val side = minOf(maxWidth, maxHeight)
@@ -370,14 +384,15 @@ private fun BigCover(song: Song, playing: Boolean) {
             song.videoId,
             transitionSpec = { (fadeIn(tween(320)) + scaleIn(tween(420, easing = FastOutSlowInEasing), 0.94f)) togetherWith (fadeOut(tween(200)) + scaleOut(tween(300), 1.03f)) },
             label = "cover",
-        ) { _ ->
+        ) { id ->
             val shape = RoundedCornerShape(24.dp)
-            Artwork(
-                song.thumbnailUrl,
-                Modifier.size(side).aspectRatio(1f).graphicsLayer { scaleX = scale; scaleY = scale }
-                    .shadow(28.dp, shape, ambientColor = Color.Black.copy(alpha = 0.5f), spotColor = Color.Black.copy(alpha = 0.6f)),
-                shape,
-            )
+            val modifier = Modifier.size(side).aspectRatio(1f).graphicsLayer { scaleX = scale; scaleY = scale }
+                .shadow(28.dp, shape, ambientColor = Color.Black.copy(alpha = 0.5f), spotColor = Color.Black.copy(alpha = 0.6f))
+            if (preferences.animatedCovers && !preferences.reduceAnimation && id == song.videoId) {
+                MotionCover(song, durationMs, playing, preferences.motionQuality, preferences.animatedCoversWifiOnly, shape, modifier)
+            } else {
+                Artwork(song.thumbnailUrl, modifier, shape)
+            }
         }
     }
 }
@@ -390,8 +405,9 @@ private fun PlayerFoot(song: Song, showLyrics: Boolean, onLyrics: (() -> Unit)?)
     val error by Player.error.collectAsState()
     val queue by Player.queue.collectAsState()
     val index by Player.index.collectAsState()
-    val liked by Library.liked.collectAsState()
+    val liked by DesktopAccount.liked.collectAsState(initial = emptyList())
     val quality by Player.quality.collectAsState()
+    val qualityCheck by Player.qualityCheck.collectAsState()
     val ui by AppSettings.ui.collectAsState()
     val progress = rememberProgress(song)
     val isLiked = liked.any { it.videoId == song.videoId }
@@ -412,9 +428,10 @@ private fun PlayerFoot(song: Song, showLyrics: Boolean, onLyrics: (() -> Unit)?)
                 }
             }
             Spacer(Modifier.width(10.dp))
-            HeartButton(isLiked) { Library.setLiked(song, !isLiked) }
+            HeartButton(isLiked) { DesktopAccount.setLiked(song, !isLiked) }
             Spacer(Modifier.width(10.dp))
-            MoreButton(song)
+            AudioOutputButton()
+            MoreButton(song, checkingQuality = qualityCheck?.busy == true)
         }
         SeekBar(progress, Modifier.padding(top = 14.dp))
         Box(Modifier.fillMaxWidth()) {
@@ -423,6 +440,21 @@ private fun PlayerFoot(song: Song, showLyrics: Boolean, onLyrics: (() -> Unit)?)
             Text(
                 "-" + Time.format((progress.durationMs - progress.positionMs).coerceAtLeast(0)), style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.align(Alignment.CenterEnd),
+            )
+        }
+        qualityCheck?.let { check ->
+            LaunchedEffect(check) {
+                if (!check.busy) {
+                    delay(5_000)
+                    Player.dismissQualityCheck(check)
+                }
+            }
+            Text(
+                check.message,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                textAlign = TextAlign.Center,
             )
         }
         PlayerControls(
@@ -611,11 +643,12 @@ private fun LikeBurst(t: Float, seed: Int, colors: List<Color>, modifier: Modifi
     }
 }
 
-/** More, in a round button: add the song to a playlist. */
+/** Additional actions for the currently playing track. */
 @Composable
-private fun MoreButton(song: Song) {
+private fun MoreButton(song: Song, checkingQuality: Boolean) {
     var open by remember { mutableStateOf(false) }
     var adding by remember { mutableStateOf(false) }
+    var commentingOn by remember { mutableStateOf<Song?>(null) }
     Box {
         Box(
             Modifier.size(46.dp).clip(CircleShape).background(MaterialTheme.colorScheme.surfaceContainerHigh).clickable { open = true },
@@ -627,7 +660,19 @@ private fun MoreButton(song: Song) {
                 leadingIcon = { Icon(Icons.AutoMirrored.Rounded.PlaylistAdd, null) },
                 onClick = { open = false; adding = true },
             )
+            if (com.opentune.data.isYouTubeId(song.videoId)) {
+                if (!com.opentune.data.podcasts.Podcasts.isEpisode(song.videoId)) DropdownMenuItem(
+                    text = { Text("Upgrade quality") },
+                    enabled = !checkingQuality,
+                    onClick = { open = false; Player.requestQualityUpgrade(song.videoId) },
+                )
+                DropdownMenuItem(
+                    text = { Text("Comments") },
+                    onClick = { open = false; commentingOn = song },
+                )
+            }
         }
         AddToPlaylistMenu(song, adding) { adding = false }
     }
+    commentingOn?.let { DesktopComments(it) { commentingOn = null } }
 }

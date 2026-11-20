@@ -32,7 +32,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Text
+import com.opentune.ui.theme.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -50,13 +50,19 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil3.compose.AsyncImage
+import com.opentune.data.innertube.Innertube
+import com.opentune.data.isYouTubeId
+import com.opentune.data.model.PlaylistPrivacy
 import com.opentune.data.model.Song
 
 /** "Add to playlist" for [song]: each playlist, and a new one named after the song. */
 @Composable
 internal fun AddToPlaylistMenu(song: Song, open: Boolean, onDismiss: () -> Unit) {
     val playlists by Library.playlists.collectAsState()
+    val signedIn by DesktopAccount.signedIn.collectAsState()
+    val account by DesktopAccount.library.collectAsState()
     var naming by remember { mutableStateOf(false) }
+    var namingAccount by remember { mutableStateOf(false) }
     DropdownMenu(open, onDismissRequest = onDismiss) {
         DropdownMenuItem(
             text = { Text("New playlist") },
@@ -72,11 +78,39 @@ internal fun AddToPlaylistMenu(song: Song, open: Boolean, onDismiss: () -> Unit)
                 onClick = { Library.addToPlaylist(p.id, song); onDismiss() },
             )
         }
+        if (signedIn && isYouTubeId(song.videoId)) {
+            HorizontalDivider()
+            DropdownMenuItem(
+                text = { Text("New YouTube Music playlist") },
+                leadingIcon = { Icon(Icons.Rounded.Add, null) },
+                onClick = { onDismiss(); namingAccount = true },
+            )
+            account.playlists.forEach { playlist ->
+                val browseId = playlist.browseId ?: return@forEach
+                DropdownMenuItem(
+                    text = { Text("${playlist.title} · YouTube Music", maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                    onClick = {
+                        onDismiss()
+                        DesktopAccount.editPlaylist("Couldn't add this song to the YouTube Music playlist.", edit = {
+                            Innertube.addToPlaylist(browseId, listOf(song.videoId))
+                        })
+                    },
+                )
+            }
+        }
     }
     if (naming) {
         NameDialog("New playlist", "", "Create", onDismiss = { naming = false }) { name ->
             Library.addToPlaylist(Library.createPlaylist(name), song)
             naming = false
+        }
+    }
+    if (namingAccount && signedIn) {
+        NameDialog("New YouTube Music playlist", "", "Create", onDismiss = { namingAccount = false }) { name ->
+            namingAccount = false
+            DesktopAccount.editPlaylist("Couldn't create your YouTube Music playlist.", edit = {
+                Innertube.createPlaylist(name.trim(), PlaylistPrivacy.PRIVATE, videoIds = listOf(song.videoId))
+            })
         }
     }
 }
@@ -153,6 +187,7 @@ internal fun PlaylistPage(id: String, onBack: () -> Unit) {
             cover = { m -> Mosaic(playlist.covers, m) },
             coverUrl = playlist.covers.firstOrNull(), kind = "Playlist", title = playlist.name, subtitle = "Made on this computer", songs = songs,
         ) {
+            DownloadAllButton(songs)
             HoverIcon(Icons.Rounded.Edit, "Rename", size = 42.dp, iconSize = 20.dp) { renaming = true }
             HoverIcon(Icons.Rounded.Delete, "Delete playlist", size = 42.dp, iconSize = 20.dp) { deleting = true }
         }

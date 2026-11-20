@@ -1,6 +1,5 @@
 package com.opentune.cast
 
-import androidx.test.core.app.ApplicationProvider
 import java.io.File
 import java.net.InetAddress
 import java.net.ServerSocket
@@ -83,8 +82,7 @@ class CastTest {
     }
 
     @Test fun servesFilesWithRanges() {
-        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
-        CastServer.start(context)
+        CastServer.start(InetAddress.getLoopbackAddress())
         try {
             val file = File.createTempFile("song", ".m4a").apply { writeBytes(ByteArray(1000) { (it % 251).toByte() }); deleteOnExit() }
             val url = CastServer.publish(CastServer.Source.OnPhone(file, "audio/mp4"), InetAddress.getLoopbackAddress())

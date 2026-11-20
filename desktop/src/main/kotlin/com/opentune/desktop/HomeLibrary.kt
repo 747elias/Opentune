@@ -30,14 +30,18 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.Favorite
+import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.History
+import androidx.compose.material.icons.rounded.LibraryMusic
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Shuffle
 import androidx.compose.material.icons.rounded.Storage
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import com.opentune.ui.theme.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -100,8 +104,10 @@ internal fun HomePage(onOpen: (ShelfItem) -> Unit, onOpenAny: (Any) -> Unit) {
     var failed by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val recent by Library.recent.collectAsState()
-    val liked by Library.liked.collectAsState()
+    val liked by DesktopAccount.liked.collectAsState(initial = emptyList())
     val history = rememberHistory()
+    val hidden by DesktopHidden.list.collectAsState()
+    val dislikes by DesktopHidden.dislikes.collectAsState()
     val moods by produceState(emptyList<MoodGenre>()) { value = runCatching { Pages.moods() }.getOrDefault(emptyList()) }
     fun load() {
         failed = false
@@ -141,9 +147,18 @@ internal fun HomePage(onOpen: (ShelfItem) -> Unit, onOpenAny: (Any) -> Unit) {
     }
     LaunchedEffect(nearEnd, next, shelves, extrasDone) { if (nearEnd) more() }
 
-    val speedDial = remember(history) { SpeedDial.fromHistory(history, limit = 27) }
-    val mixes = remember(history) { DailyMixes.build(history) }
-    val loaded = shelves
+    val suggestions = remember(history, hidden, dislikes) { hidden.records(history).filterNot { it.videoId in dislikes } }
+    val speedDial = remember(suggestions) { SpeedDial.fromHistory(suggestions, limit = 27) }
+    val mixes = rememberDesktopMixes(suggestions)
+    val loaded = remember(shelves, hidden, dislikes) {
+        shelves?.mapNotNull { shelf ->
+            val kept = shelf.items.filterNot { item ->
+                item.browseId == null && item.videoId != null &&
+                    (item.videoId in dislikes || hidden.hides(item.videoId, Pages.artistIn(item.subtitle)))
+            }
+            shelf.copy(items = kept).takeIf { kept.isNotEmpty() }
+        }
+    }
     ScrollPage("Home", greeting(), state = list) {
         recent.firstOrNull()?.let { last -> item(key = "hero") { JumpBackIn(last, recent) } }
         if (mixes.isNotEmpty() || speedDial.isNotEmpty()) item(key = "picks") {
@@ -265,6 +280,7 @@ internal fun SongGrid(title: String, songs: List<Song>, rows: Int = 4) {
                         )
                         Text(song.artist, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
+                    SuggestionActions(song)
                 }
             }
         }
@@ -384,7 +400,29 @@ private fun MoodTiles(moods: List<MoodGenre>, onOpen: (MoodGenre) -> Unit) {
 @Composable
 internal fun NewPage(onOpen: (ShelfItem) -> Unit) {
     val shelves by produceState<List<Pages.Shelf>?>(null) { value = runCatching { Pages.moreForHome() }.getOrDefault(emptyList()) }
+    val releases by DesktopArtistReleases.state.collectAsState()
+    val checking by DesktopArtistReleases.checking.collectAsState()
+    val library by com.opentune.data.settings.AppSettings.library.collectAsState()
     ScrollPage("Explore", "New releases and what's climbing the charts") {
+        if (releases.artists.isNotEmpty()) item(key = "followed") {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Row(Modifier.fillMaxWidth().padding(horizontal = GUTTER), verticalAlignment = Alignment.CenterVertically) {
+                    Text("Following", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.weight(1f))
+                    TextButton(enabled = !checking, onClick = DesktopArtistReleases::refresh) {
+                        Text(if (checking) "Checking for releases…" else "Check for new releases")
+                    }
+                }
+                SwitchRow("New release alerts", null, library.releaseAlerts) { enabled ->
+                    com.opentune.data.settings.AppSettings.updateLibrary { it.copy(releaseAlerts = enabled) }
+                    if (enabled) MacMediaControls.authorizeReleaseNotices()
+                }
+                ShelfRow(Pages.Shelf("Followed artists", releases.artists.map {
+                    ShelfItem(it.name, "Artist", it.thumbnailUrl, null, it.browseId)
+                }), onOpen)
+                val albums = releases.inbox.map { it.item }.filterNot { library.hideExplicit && it.explicit }
+                if (albums.isNotEmpty()) ShelfRow(Pages.Shelf("New from artists you follow", albums), onOpen)
+            }
+        }
         when (val loaded = shelves) {
             null -> items(3) { ShelfPlaceholder() }
             else -> if (loaded.isEmpty()) item { Message("Nothing new could be loaded", "Check your connection and try again.") }
@@ -454,7 +492,8 @@ internal fun MixPage(mix: DailyMixes.Mix) {
  */
 @Composable
 internal fun LibraryHome(onShelf: (Shelf) -> Unit, onPlaylist: (String) -> Unit, onOpenAny: (Any) -> Unit) {
-    val liked by Library.liked.collectAsState()
+    val liked by DesktopAccount.liked.collectAsState(initial = emptyList())
+    val localTracks by Library.localTracks.collectAsState()
     val recent by Library.recent.collectAsState()
     val playlists by Library.playlists.collectAsState()
     val server by Subsonic.server.collectAsState()
@@ -466,14 +505,22 @@ internal fun LibraryHome(onShelf: (Shelf) -> Unit, onPlaylist: (String) -> Unit,
         Wrapped.summarize(history, start, now)
     }
     val month = remember(history) { Wrapped.summarize(history, now - 30L * 86_400_000L, now) }
-    val mixes = remember(history) { DailyMixes.build(history) }
+    val hidden by DesktopHidden.list.collectAsState()
+    val dislikes by DesktopHidden.dislikes.collectAsState()
+    val suggestions = remember(history, hidden, dislikes) { hidden.records(history).filterNot { it.videoId in dislikes } }
+    val mixes = rememberDesktopMixes(suggestions)
     ScrollPage("Library") {
-        item(key = "year") { YearCard(year) }
+        item(key = "year") { YearCard(year) { onShelf(Shelf.REPLAY) } }
         item(key = "shortcuts") {
             HRow(12.dp) {
                 item { Shortcut(Icons.Rounded.Favorite, "Liked songs", songCount(liked.size), heart = true) { onShelf(Shelf.LIKED) } }
+                item { Shortcut(Icons.Rounded.Folder, "Local files", songCount(localTracks.size)) { onShelf(Shelf.LOCAL) } }
+                item { Shortcut(Icons.Rounded.AutoAwesome, "Smart playlists", "Fill from your listening") { onShelf(Shelf.SMART) } }
                 item { Shortcut(Icons.Rounded.History, "Recently played", if (recent.isEmpty()) "Nothing yet" else "${recent.size} songs") { onShelf(Shelf.RECENT) } }
+                item { Shortcut(Icons.Rounded.History, "Replay", "Your listening stats") { onShelf(Shelf.REPLAY) } }
                 if (server != null) item { Shortcut(Icons.Rounded.Storage, "Your server", server!!.url.substringAfter("://").substringBefore('/')) { onShelf(Shelf.SERVER) } }
+                item { Shortcut(Icons.Rounded.LibraryMusic, "YouTube Music", "Account library") { onOpenAny(AccountLibraryKey) } }
+                item { Shortcut(Icons.Rounded.LibraryMusic, "Spotify", "Account library") { onOpenAny(SpotifyLibraryKey) } }
                 item { Shortcut(Icons.Rounded.Add, "New playlist", "Start one here") { naming = true } }
             }
         }
@@ -553,13 +600,13 @@ private fun songCountOf(n: Int, what: String) = if (n == 1) "1 $what" else "$n $
  * songs and artists, with the song you've played most and its cover.
  */
 @Composable
-private fun YearCard(summary: Wrapped.Summary) {
+private fun YearCard(summary: Wrapped.Summary, onOpen: () -> Unit) {
     val top = summary.topSongs.firstOrNull()
     val base = MaterialTheme.colorScheme.surfaceContainerHigh
     val colour = rememberCoverColor(top?.thumbnailUrl, base)
     val shape = RoundedCornerShape(22.dp)
     Box(
-        Modifier.padding(horizontal = GUTTER).fillMaxWidth().clip(shape)
+        Modifier.padding(horizontal = GUTTER).fillMaxWidth().clip(shape).clickable(onClick = onOpen)
             .background(Brush.linearGradient(listOf(tint(colour, base, 0.55f), tint(colour, base, 0.18f)))),
     ) {
         Row(Modifier.padding(22.dp), verticalAlignment = Alignment.CenterVertically) {

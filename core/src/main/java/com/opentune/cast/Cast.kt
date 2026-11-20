@@ -14,12 +14,10 @@ import com.opentune.data.radio.Radio
 import com.opentune.data.subsonic.Subsonic
 import com.opentune.playback.toSong
 import com.opentune.playback.trackUri
-import java.net.DatagramPacket
-import java.net.DatagramSocket
 import java.net.InetAddress
-import java.net.InetSocketAddress
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.coroutines.resume
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -37,19 +35,6 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.Request
-
-/** A device music can be cast to. */
-data class CastTarget(
-    val id: String,
-    val name: String,
-    val kind: Kind,
-    val host: String,
-    val port: Int = 0,
-    val model: String? = null,
-    val dlna: DlnaDevice? = null,
-) {
-    enum class Kind { CHROMECAST, DLNA }
-}
 
 /**
  * Casting: finding Chromecasts and DLNA renderers on the Wi-Fi, connecting
@@ -99,14 +84,13 @@ object Cast {
         }
     }
 
-    fun connect(context: Context, target: CastTarget) {
-        val app = context.applicationContext
+    fun connect(target: CastTarget) {
         disconnect()
         _session.value = Session(target, null)
         connectJob = scope.launch {
             val receiver = try {
                 withContext(Dispatchers.IO) {
-                    CastServer.start(app)
+                    CastServer.start()
                     when (target.kind) {
                         CastTarget.Kind.CHROMECAST -> Chromecast(target.name, target.host, target.port).also { it.connect() }
                         CastTarget.Kind.DLNA -> target.dlna!!.let { Dlna(it.name, it.transportUrl, it.renderingUrl) }
@@ -174,8 +158,14 @@ object Cast {
         }
         if (LocalMusic.isLocal(id)) {
             val uri = trackUri(id)
-            val type = context.contentResolver.getType(uri) ?: "audio/mpeg"
-            return@withContext media(CastServer.publish(CastServer.Source.Content(uri, type), host), type)
+            val resolver = context.applicationContext.contentResolver
+            val type = resolver.getType(uri) ?: "audio/mpeg"
+            val source = CastServer.Source.Content(
+                type,
+                length = { runCatching { resolver.openFileDescriptor(uri, "r")?.use { it.statSize } }.getOrNull() ?: -1L },
+                open = { resolver.openInputStream(uri) ?: error("can't open $uri") },
+            )
+            return@withContext media(CastServer.publish(source, host), type)
         }
         if (Subsonic.isSubsonic(id)) {
             val url = Subsonic.streamUrl(id) ?: return@withContext null
@@ -281,42 +271,16 @@ object Cast {
     private suspend fun findRenderers(context: Context) {
         val wifi = context.getSystemService(Context.WIFI_SERVICE) as? WifiManager
         val lock = runCatching { wifi?.createMulticastLock("opentune-cast")?.apply { setReferenceCounted(false); acquire() } }.getOrNull()
-        val seen = HashSet<String>()
         try {
-            DatagramSocket(null).use { socket ->
-                socket.reuseAddress = true
-                socket.bind(InetSocketAddress(0))
-                socket.soTimeout = 500
-                val search = ("M-SEARCH * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\nMAN: \"ssdp:discover\"\r\nMX: 2\r\n" +
-                    "ST: urn:schemas-upnp-org:device:MediaRenderer:1\r\n\r\n").toByteArray()
-                val group = InetAddress.getByName("239.255.255.250")
-                val buffer = ByteArray(4096)
-                val end = System.currentTimeMillis() + SCAN_MS
-                var sent = 0
-                while (System.currentTimeMillis() < end) {
-                    if (sent < 3) {
-                        runCatching { socket.send(DatagramPacket(search, search.size, group, 1900)) }
-                        sent++
-                    }
-                    val packet = DatagramPacket(buffer, buffer.size)
-                    val reply = runCatching { socket.receive(packet); String(packet.data, 0, packet.length) }.getOrNull() ?: continue
-                    val location = DlnaDescription.location(reply) ?: continue
-                    if (!seen.add(location)) continue
-                    scope.launch(Dispatchers.IO) { describe(location)?.let(::add) }
-                }
-            }
+            DlnaDiscovery.find(SCAN_MS, ::add)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (e: Exception) {
             Log.w(TAG, "SSDP search failed", e)
         } finally {
             runCatching { lock?.release() }
         }
     }
-
-    private fun describe(location: String): CastTarget? = runCatching {
-        val xml = Http.client.newCall(Request.Builder().url(location).build()).execute().use { it.body?.string().orEmpty() }
-        val device = DlnaDescription.parse(xml, location) ?: return null
-        CastTarget(device.id, device.name, CastTarget.Kind.DLNA, java.net.URI(location).host, dlna = device)
-    }.getOrNull()
 
     private const val SCAN_MS = 8_000L
 }

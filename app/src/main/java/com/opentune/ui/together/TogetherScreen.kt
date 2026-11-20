@@ -133,6 +133,7 @@ import androidx.compose.ui.zIndex
 import com.opentune.data.settings.AppSettings
 import com.opentune.data.together.Member
 import com.opentune.data.together.RoomCode
+import com.opentune.data.together.RoomProtocol
 import com.opentune.data.together.Together
 import com.opentune.ui.KeepChromeOut
 import com.opentune.ui.components.Artwork
@@ -185,7 +186,7 @@ fun TogetherScreen(contentPadding: PaddingValues, code: String?, onBack: () -> U
     LaunchedEffect(opening) {
         if (!opening) return@LaunchedEffect
         val since = System.currentTimeMillis()
-        withTimeoutOrNull(OPENING_MAX_MS) { Together.room.first { it == null || it.phase != Together.Phase.Connecting } }
+        withTimeoutOrNull(OPENING_MAX_MS) { Together.room.first { it == null || it.phase != RoomProtocol.Phase.Connecting } }
         // Long enough to see what happened, when the relays answer at once.
         if (!still) delay((OPENING_MIN_MS - (System.currentTimeMillis() - since)).coerceAtLeast(0))
         val now = Together.room.value
@@ -481,7 +482,7 @@ private fun Modifier.roomCard(inset: Dp = 16.dp): Modifier {
 private val GAP = 6.dp
 
 @Composable
-internal fun RoomView(r: Together.Room, onBack: () -> Unit, contentPadding: PaddingValues = PaddingValues(), openInvite: Boolean = false) {
+internal fun RoomView(r: RoomProtocol.Room, onBack: () -> Unit, contentPadding: PaddingValues = PaddingValues(), openInvite: Boolean = false) {
     val context = LocalContext.current
     val still = AppSettings.ui.collectAsState().value.reduceAnimation
     val density = LocalDensity.current
@@ -494,7 +495,7 @@ internal fun RoomView(r: Together.Room, onBack: () -> Unit, contentPadding: Padd
     // The island sits on the dock, and on the keyboard while it's up.
     KeepChromeOut()
     KeyboardResizes()
-    val island = r.phase != Together.Phase.Ended
+    val island = r.phase != RoomProtocol.Phase.Ended
     val keyboard = WindowInsets.ime.asPaddingValues().calculateBottomPadding()
     val above = maxOf(contentPadding.calculateBottomPadding() - ISLAND_DROP, keyboard + 8.dp, 8.dp)
     var islandHeight by remember { mutableStateOf(ISLAND_HEIGHT) }
@@ -565,7 +566,7 @@ internal fun RoomView(r: Together.Room, onBack: () -> Unit, contentPadding: Padd
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Text("Paused for you. The room keeps playing.", Modifier.weight(1f), color = MaterialTheme.colorScheme.onTertiaryContainer)
-                        Button(onClick = { Together.intercept(Together.Control.PlayPause) }) { Text("Catch up") }
+                        Button(onClick = { Together.intercept(RoomProtocol.Control.PlayPause) }) { Text("Catch up") }
                     }
                 }
             }
@@ -634,7 +635,7 @@ private fun KeyboardResizes() {
  */
 @Composable
 private fun RoomIsland(
-    r: Together.Room,
+    r: RoomProtocol.Room,
     speaking: Set<String>,
     open: Boolean,
     onOpen: (Boolean) -> Unit,
@@ -646,7 +647,7 @@ private fun RoomIsland(
     modifier: Modifier = Modifier,
 ) {
     val scheme = MaterialTheme.colorScheme
-    val live = r.phase == Together.Phase.Live
+    val live = r.phase == RoomProtocol.Phase.Live
     val inCall by Together.inCall.collectAsState()
     val recording by Together.recording.collectAsState()
     // Its edge takes the colour of what's going on: red while you record, green while anyone talks.
@@ -728,7 +729,7 @@ private fun RoomIsland(
 
 /** What the island says in its top row: the headline and a line under it. */
 @Composable
-private fun islandText(r: Together.Room, speaking: Set<String>, open: Boolean, message: String): Pair<String, String> {
+private fun islandText(r: RoomProtocol.Room, speaking: Set<String>, open: Boolean, message: String): Pair<String, String> {
     val inCall by Together.inCall.collectAsState()
     val callMuted by Together.callMuted.collectAsState()
     val meSpeaking by Together.speaking.collectAsState()
@@ -744,15 +745,15 @@ private fun islandText(r: Together.Room, speaking: Set<String>, open: Boolean, m
     val others = r.members.size - 1
     val rest = when {
         message.isNotBlank() && !open -> com.opentune.i18n.Tr.f("Draft: {0}", message)
-        open -> if (r.phase == Together.Phase.Live) "Hold the mic to talk, or call" else "Write to the room"
-        others <= 0 && r.hosting && r.phase == Together.Phase.Live -> "Share the code to bring friends in"
+        open -> if (r.phase == RoomProtocol.Phase.Live) "Hold the mic to talk, or call" else "Write to the room"
+        others <= 0 && r.hosting && r.phase == RoomProtocol.Phase.Live -> "Share the code to bring friends in"
         else -> "Tap to chat"
     }
     return when {
-        r.phase == Together.Phase.Connecting -> "Connecting…" to rest
-        r.phase == Together.Phase.FindingHost -> "Looking for the host…" to rest
-        r.phase == Together.Phase.Waiting -> "Waiting to be let in…" to com.opentune.i18n.Tr.f("{0} has to say yes", r.hostName ?: com.opentune.i18n.Tr.t("The host"))
-        r.phase == Together.Phase.LostHost -> "Lost touch with the host" to "Still trying…"
+        r.phase == RoomProtocol.Phase.Connecting -> "Connecting…" to rest
+        r.phase == RoomProtocol.Phase.FindingHost -> "Looking for the host…" to rest
+        r.phase == RoomProtocol.Phase.Waiting -> "Waiting to be let in…" to com.opentune.i18n.Tr.f("{0} has to say yes", r.hostName ?: com.opentune.i18n.Tr.t("The host"))
+        r.phase == RoomProtocol.Phase.LostHost -> "Lost touch with the host" to "Still trying…"
         recording == true -> "You're talking" to "Let go to stop"
         recording == false -> "Recording a voice note" to "Let go to send it"
         inCall -> (talking ?: "In the call") to when {
@@ -914,7 +915,7 @@ private fun MessageBox(message: String, onChange: (String) -> Unit, onSend: () -
 
 /** The code, how the room is doing, the ways to bring people in, and the way out. */
 @Composable
-private fun CodeCard(r: Together.Room, onInvite: () -> Unit, onCopy: () -> Unit) {
+private fun CodeCard(r: RoomProtocol.Room, onInvite: () -> Unit, onCopy: () -> Unit) {
     Column(
         Modifier.padding(vertical = GAP).roomCard().padding(start = 20.dp, end = 20.dp, top = 22.dp, bottom = 10.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -924,7 +925,7 @@ private fun CodeCard(r: Together.Room, onInvite: () -> Unit, onCopy: () -> Unit)
         Text(r.code.pretty, fontSize = 32.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace, letterSpacing = 2.sp, maxLines = 1)
         Spacer(Modifier.height(10.dp))
         LiveStatus(r)
-        if (r.phase != Together.Phase.Ended) {
+        if (r.phase != RoomProtocol.Phase.Ended) {
             Spacer(Modifier.height(18.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 Button(onClick = onInvite, Modifier.weight(1f).height(48.dp)) {
@@ -950,13 +951,13 @@ private fun CodeCard(r: Together.Room, onInvite: () -> Unit, onCopy: () -> Unit)
             )
         }
         TextButton(
-            onClick = { if (r.hosting && r.phase != Together.Phase.Ended) confirmEnd = true else Together.leave() },
+            onClick = { if (r.hosting && r.phase != RoomProtocol.Phase.Ended) confirmEnd = true else Together.leave() },
             colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error),
         ) {
             Icon(Icons.AutoMirrored.Rounded.Logout, null, Modifier.size(18.dp)); Spacer(Modifier.width(8.dp))
             Text(
                 when {
-                    r.phase == Together.Phase.Ended -> "Close"
+                    r.phase == RoomProtocol.Phase.Ended -> "Close"
                     r.hosting -> "End room"
                     else -> "Leave room"
                 },
@@ -971,21 +972,21 @@ private fun CodeCard(r: Together.Room, onInvite: () -> Unit, onCopy: () -> Unit)
  * relays carry it.
  */
 @Composable
-private fun LiveStatus(r: Together.Room) {
+private fun LiveStatus(r: RoomProtocol.Room) {
     val still = AppSettings.ui.collectAsState().value.reduceAnimation
     val scheme = MaterialTheme.colorScheme
     val (text, busy) = when (r.phase) {
-        Together.Phase.Connecting -> "Connecting…" to true
-        Together.Phase.FindingHost -> "Looking for the host…" to true
-        Together.Phase.Waiting -> com.opentune.i18n.Tr.f("Waiting for {0} to let you in…", r.hostName ?: com.opentune.i18n.Tr.t("the host")) to true
-        Together.Phase.Live -> (if (r.hosting) com.opentune.i18n.Tr.f("Live · {0} joined", r.members.size - 1) else com.opentune.i18n.Tr.f("In step with {0}", r.hostName ?: com.opentune.i18n.Tr.t("the host"))) to false
-        Together.Phase.LostHost -> "Lost touch with the host. Still trying…" to true
-        Together.Phase.Ended -> (r.endedReason ?: "The room has ended") to false
+        RoomProtocol.Phase.Connecting -> "Connecting…" to true
+        RoomProtocol.Phase.FindingHost -> "Looking for the host…" to true
+        RoomProtocol.Phase.Waiting -> com.opentune.i18n.Tr.f("Waiting for {0} to let you in…", r.hostName ?: com.opentune.i18n.Tr.t("the host")) to true
+        RoomProtocol.Phase.Live -> (if (r.hosting) com.opentune.i18n.Tr.f("Live · {0} joined", r.members.size - 1) else com.opentune.i18n.Tr.f("In step with {0}", r.hostName ?: com.opentune.i18n.Tr.t("the host"))) to false
+        RoomProtocol.Phase.LostHost -> "Lost touch with the host. Still trying…" to true
+        RoomProtocol.Phase.Ended -> (r.endedReason ?: "The room has ended") to false
     }
-    val live = r.phase == Together.Phase.Live
+    val live = r.phase == RoomProtocol.Phase.Live
     val tone = when {
         live -> LIVE
-        r.phase == Together.Phase.LostHost -> scheme.error
+        r.phase == RoomProtocol.Phase.LostHost -> scheme.error
         else -> scheme.onSurfaceVariant
     }
     val beat = if (live && !still) rememberInfiniteTransition(label = "live") else null
@@ -1005,7 +1006,7 @@ private fun LiveStatus(r: Together.Room) {
         }
         Spacer(Modifier.width(8.dp))
         Text(
-            text + if (r.relays > 0 && r.phase != Together.Phase.Ended) com.opentune.i18n.Tr.f(" · {0} relays", r.relays) else "",
+            text + if (r.relays > 0 && r.phase != RoomProtocol.Phase.Ended) com.opentune.i18n.Tr.f(" · {0} relays", r.relays) else "",
             style = MaterialTheme.typography.labelLarge,
             color = if (live) tone else scheme.onSurfaceVariant,
             maxLines = 2,
@@ -1017,7 +1018,7 @@ private fun LiveStatus(r: Together.Room) {
 private val LIVE = Color(0xFF4CAF50)
 
 @Composable
-private fun NowInRoom(r: Together.Room) {
+private fun NowInRoom(r: RoomProtocol.Room) {
     val t = r.track
     Column(Modifier.padding(vertical = GAP).roomCard().padding(14.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1059,7 +1060,7 @@ private fun NowInRoom(r: Together.Room) {
 
 /** The room's switches, in one card: the host's for the room, a guest's for themselves. */
 @Composable
-private fun RoomSettings(r: Together.Room) {
+private fun RoomSettings(r: RoomProtocol.Room) {
     Column(Modifier.padding(vertical = GAP).roomCard()) {
         if (r.hosting) {
             ToggleRow(
@@ -1217,7 +1218,7 @@ private val AVATARS = listOf(0xFFFF8A65, 0xFF4FC3F7, 0xFF9CCC65, 0xFFFFD54F, 0xF
 private fun avatarColor(name: String) = Color(AVATARS[Math.floorMod(name.hashCode(), AVATARS.size)])
 
 @Composable
-private fun ChatBubble(line: Together.ChatLine) {
+private fun ChatBubble(line: RoomProtocol.ChatLine) {
     if (line.system) {
         Text(
             line.text,
@@ -1258,7 +1259,7 @@ private fun ChatBubble(line: Together.ChatLine) {
 
 /** A voice note or a piece of talk: play or stop, and how long it is. */
 @Composable
-private fun VoiceBubble(clip: Together.VoiceClip) {
+private fun VoiceBubble(clip: RoomProtocol.VoiceClip) {
     val playing by Together.playingClip.collectAsState()
     val isPlaying = playing == clip.id
     Row(verticalAlignment = Alignment.CenterVertically) {

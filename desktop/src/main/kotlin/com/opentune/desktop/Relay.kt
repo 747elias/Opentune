@@ -5,6 +5,7 @@ import com.sun.net.httpserver.HttpExchange
 import com.sun.net.httpserver.HttpServer
 import java.net.InetAddress
 import java.net.InetSocketAddress
+import java.util.UUID
 import java.util.concurrent.Executors
 import kotlinx.coroutines.runBlocking
 import okhttp3.Request
@@ -18,34 +19,38 @@ import okhttp3.Request
 object Relay {
     /** YouTube serves large ranges slowly; a megabyte at a time keeps it quick. */
     private const val PIECE = 1L shl 20
+    private val path = "/song/${UUID.randomUUID()}/"
 
     private val server: HttpServer by lazy {
-        HttpServer.create(InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 16).apply {
+        HttpServer.create(InetSocketAddress(InetAddress.getByName("127.0.0.1"), 0), 16).apply {
             executor = Executors.newCachedThreadPool { r -> Thread(r, "relay").apply { isDaemon = true } }
-            createContext("/song/") { exchange -> try { serve(exchange) } finally { exchange.close() } }
+            createContext(path) { exchange -> try { serve(exchange) } finally { exchange.close() } }
             start()
         }
     }
 
     /** The address an engine plays [videoId] from, in [kind]; JavaFX goes by the extension. */
-    fun addressOf(videoId: String, kind: Streams.Kind = Streams.Kind.AAC): String =
-        "http://127.0.0.1:${server.address.port}/song/$videoId.${kind.extension}"
+    fun addressOf(videoId: String, kind: Streams.Kind = Streams.Kind.AAC, maxKbps: Int = Int.MAX_VALUE): String =
+        "http://127.0.0.1:${server.address.port}$path$videoId.${kind.extension}?maxKbps=$maxKbps"
 
     private fun serve(exchange: HttpExchange) {
-        val name = exchange.requestURI.path.removePrefix("/song/")
+        if (exchange.requestMethod !in setOf("GET", "HEAD")) return exchange.sendResponseHeaders(405, -1)
+        val name = exchange.requestURI.path.removePrefix(path)
         val kind = Streams.Kind.entries.firstOrNull { name.endsWith(".${it.extension}") } ?: return exchange.sendResponseHeaders(404, -1)
         val videoId = name.removeSuffix(".${kind.extension}").takeIf { it.matches(VIDEO_ID) }
             ?: return exchange.sendResponseHeaders(404, -1)
-        var stream = runCatching { runBlocking { Streams.resolve(videoId, kind = kind) } }.getOrElse {
+        val maxKbps = exchange.requestURI.rawQuery?.removePrefix("maxKbps=")?.toIntOrNull()?.takeIf { it > 0 }
+            ?: Int.MAX_VALUE
+        var stream = runCatching { runBlocking { Streams.resolve(videoId, kind = kind, maxKbps = maxKbps) } }.getOrElse {
             System.err.println("Relay: no stream for $videoId: $it")
             return exchange.sendResponseHeaders(502, -1)
         }
-        val size = runCatching { length(stream.url) }.getOrElse { first ->
+        val size = runCatching { length(stream) }.getOrElse { first ->
             System.err.println("Relay: $videoId refused ($first), looking again")
             Streams.forget(videoId)
-            stream = runCatching { runBlocking { Streams.resolve(videoId, fresh = true, kind = kind) } }.getOrNull()
+            stream = runCatching { runBlocking { Streams.resolve(videoId, fresh = true, kind = kind, maxKbps = maxKbps) } }.getOrNull()
                 ?: return exchange.sendResponseHeaders(502, -1)
-            runCatching { length(stream.url) }.getOrElse {
+            runCatching { length(stream) }.getOrElse {
                 System.err.println("Relay: $videoId refused again ($it)")
                 return exchange.sendResponseHeaders(502, -1)
             }
@@ -65,7 +70,7 @@ object Relay {
         var at = from
         while (at <= to) {
             val end = minOf(to, at + PIECE - 1)
-            val piece = Request.Builder().url(stream.url).header("Range", "bytes=$at-$end").build()
+            val piece = mediaRequest(stream, "bytes=$at-$end")
             Http.client.newCall(piece).execute().use { r ->
                 if (!r.isSuccessful) {
                     Streams.forget(videoId)
@@ -79,8 +84,8 @@ object Relay {
     }
 
     /** The stream's full length, from a one-byte request. */
-    private fun length(url: String): Long {
-        val probe = Request.Builder().url(url).header("Range", "bytes=0-0").build()
+    private fun length(stream: Streams.Stream): Long {
+        val probe = mediaRequest(stream, "bytes=0-0")
         Http.client.newCall(probe).execute().use { r ->
             check(r.isSuccessful) { "refused: ${r.code}" }
             return r.header("Content-Range")?.substringAfter('/')?.toLongOrNull()
@@ -88,6 +93,10 @@ object Relay {
                 ?: error("no length")
         }
     }
+
+    private fun mediaRequest(stream: Streams.Stream, range: String): Request = Request.Builder()
+        .url(stream.url).apply { stream.headers.forEach { (key, value) -> header(key, value) } }
+        .header("Range", range).build()
 
     private val VIDEO_ID = Regex("[A-Za-z0-9_-]{11}")
 }

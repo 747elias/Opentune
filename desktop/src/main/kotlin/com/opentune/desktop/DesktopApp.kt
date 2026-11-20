@@ -79,13 +79,17 @@ import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.Home
 import androidx.compose.material.icons.rounded.Lyrics
 import androidx.compose.material.icons.rounded.LibraryMusic
+import androidx.compose.material.icons.rounded.Mic
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.Podcasts
+import androidx.compose.material.icons.rounded.Radio
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.SearchOff
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.SkipNext
 import androidx.compose.material.icons.rounded.SkipPrevious
+import androidx.compose.material.icons.rounded.Groups
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.FilterChip
@@ -95,7 +99,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
+import com.opentune.ui.theme.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
@@ -144,10 +148,18 @@ import coil3.request.ImageRequest
 import coil3.request.crossfade
 import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import com.opentune.data.model.ShelfItem
+import com.opentune.data.ContentFilter
 import com.opentune.data.history.DailyMixes
+import com.opentune.data.innertube.Innertube
+import com.opentune.data.innertube.InnertubeParser
+import com.opentune.data.model.BrowseType
+import com.opentune.data.model.SearchFilter
+import com.opentune.data.model.SearchResult
 import com.opentune.data.model.Song
 import com.opentune.data.settings.AppSettings
 import com.opentune.data.subsonic.Subsonic
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.delay
 import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.FastOutLinearInEasing
 import androidx.compose.ui.input.nestedscroll.nestedScroll
@@ -164,12 +176,18 @@ internal enum class Tab(val label: String, val icon: ImageVector, val selectedIc
     NEW("Explore", Icons.Rounded.GridView, Icons.Rounded.GridView),
     SEARCH("Search", Icons.Rounded.Search, Icons.Rounded.Search),
     LIBRARY("Library", Icons.Outlined.LibraryMusic, Icons.Rounded.LibraryMusic),
+    PODCASTS("Podcasts", Icons.Rounded.Podcasts, Icons.Rounded.Podcasts),
+    RADIO("Radio", Icons.Rounded.Radio, Icons.Rounded.Radio),
+    ROOMS("Listen together", Icons.Rounded.Groups, Icons.Rounded.Groups),
+    RECOGNIZE("Recognize music", Icons.Rounded.Mic, Icons.Rounded.Mic),
     QUEUE("Up next", Icons.AutoMirrored.Outlined.QueueMusic, Icons.AutoMirrored.Rounded.QueueMusic),
     SETTINGS("Settings", Icons.Outlined.Settings, Icons.Rounded.Settings),
 }
 
 /** A playlist made here, opened from the sidebar or Library. */
 internal data class PlaylistKey(val id: String)
+
+private data class PodcastKey(val id: String)
 
 /** What fills the page area: a tab, or something opened over it. */
 private data class Page(val tab: Tab, val shelf: Shelf? = null, val opened: Any? = null)
@@ -182,18 +200,21 @@ private data class Page(val tab: Tab, val shelf: Shelf? = null, val opened: Any?
  * pictures). Clicking the song in the bar opens the full player.
  */
 @Composable
-fun DesktopApp(startPanel: SidePanel? = null) {
-    var page by remember { mutableStateOf(Page(Tab.HOME)) }
+internal fun DesktopApp(startPanel: SidePanel? = null, startTab: Tab = Tab.HOME) {
+    var page by remember { mutableStateOf(Page(startTab)) }
     // Back goes through what was opened, the way it came.
     val history = remember { mutableStateListOf<Page>() }
     var query by remember { mutableStateOf("") }
     var searches by remember { mutableStateOf(0) }
     var playerOpen by remember { mutableStateOf(false) }
+    var openLink by remember { mutableStateOf(false) }
+    val notices = remember { androidx.compose.material3.SnackbarHostState() }
     var panel by remember { mutableStateOf(startPanel) }
     val queue by Player.queue.collectAsState()
     val index by Player.index.collectAsState()
     val song = queue.getOrNull(index)
     val ui by AppSettings.ui.collectAsState()
+    val accountRevision by DesktopAccount.revision.collectAsState()
     fun go(to: Page) {
         if (to == page) return
         history.add(page)
@@ -201,6 +222,42 @@ fun DesktopApp(startPanel: SidePanel? = null) {
         page = to
     }
     val back: () -> Unit = { history.removeLastOrNull()?.let { page = it } }
+    LaunchedEffect(Unit) { DesktopLinks.openRequests.collect { openLink = true } }
+    LaunchedEffect(Unit) { DesktopRooms.notices.collect { notices.showSnackbar(it) } }
+    LaunchedEffect(Unit) {
+        hiddenMusicNotices.collect { notice ->
+            val action = notice.undo?.let { com.opentune.i18n.Tr.t("Undo") }
+            if (notices.showSnackbar(notice.message, actionLabel = action, duration = androidx.compose.material3.SnackbarDuration.Long) == androidx.compose.material3.SnackbarResult.ActionPerformed) {
+                notice.undo?.invoke()
+            }
+        }
+    }
+    LaunchedEffect(Unit) { DesktopArtistReleases.openings.collect { go(Page(Tab.NEW, opened = it)) } }
+    val releaseNotice by DesktopArtistReleases.latest.collectAsState()
+    LaunchedEffect(releaseNotice) {
+        val release = releaseNotice ?: return@LaunchedEffect
+        val message = com.opentune.i18n.Tr.f("New from {0}", release.artistName) + " · " + release.item.title
+        if (notices.showSnackbar(message, actionLabel = com.opentune.i18n.Tr.t("Open"), duration = androidx.compose.material3.SnackbarDuration.Long) == androidx.compose.material3.SnackbarResult.ActionPerformed) {
+            go(Page(Tab.NEW, opened = release.item))
+        }
+        DesktopArtistReleases.clearLatest(release)
+    }
+    LaunchedEffect(Unit) {
+        DesktopLinks.links.collect { link ->
+            when (link) {
+                is DesktopLinks.Link.Track -> {
+                    val songs = runCatching {
+                        com.opentune.data.innertube.InnertubeParser.parseWatchQueue(com.opentune.data.innertube.Innertube.next(link.id))
+                    }.getOrDefault(emptyList())
+                    val track = songs.firstOrNull { it.videoId == link.id }
+                        ?: Song(link.id, "YouTube Music", "", "https://i.ytimg.com/vi/${link.id}/mqdefault.jpg")
+                    Player.playAll(listOf(track), 0)
+                }
+                is DesktopLinks.Link.Playlist -> go(Page(Tab.LIBRARY, opened = ShelfItem("YouTube Music playlist", "", null, null, link.id)))
+                is DesktopLinks.Link.Room -> if (DesktopRooms.showInvite(link.code)) go(Page(Tab.ROOMS))
+            }
+        }
+    }
     val sideSelected: Any? = when {
         page.opened is PlaylistKey -> page.opened
         page.opened != null -> null
@@ -246,7 +303,7 @@ fun DesktopApp(startPanel: SidePanel? = null) {
                             com.opentune.ui.components.LocalHazeState provides haze.takeIf { !ui.reduceBlur },
                         ) {
                             Box(Modifier.fillMaxSize().hazeSource(haze, zIndex = 1f)) {
-                                Pages(
+                                androidx.compose.runtime.key(accountRevision) { Pages(
                                     page = page,
                                     still = ui.reduceAnimation,
                                     queue = queue,
@@ -254,13 +311,15 @@ fun DesktopApp(startPanel: SidePanel? = null) {
                                     query = query,
                                     onQuery = { query = it },
                                     searches = searches,
-                                    onSearch = { searches++ },
+                                    onSearch = { if (!DesktopLinks.submit(query)) searches++ },
                                     onOpen = { go(page.copy(opened = it)) },
-                                    onOpenAny = { go(page.copy(opened = it)) },
+                                    onOpenAny = { opened ->
+                                        if (opened is Tab) go(Page(opened)) else go(page.copy(opened = opened))
+                                    },
                                     onShelf = { go(Page(Tab.LIBRARY, it)) },
                                     onPlaylist = { go(Page(Tab.LIBRARY, Shelf.PLAYLISTS, PlaylistKey(it))) },
                                     onBack = { back() },
-                                )
+                                ) }
                             }
                             TopBar(
                                 song, canGoBack = history.isNotEmpty(), onBack = back,
@@ -289,7 +348,27 @@ fun DesktopApp(startPanel: SidePanel? = null) {
                     enter = PageMotion.playerIn(ui.playerMotion, ui.reduceAnimation),
                     exit = PageMotion.playerOut(ui.playerMotion, ui.reduceAnimation),
                 ) { full?.let { NowPlaying(it, docked = false, onClose = { playerOpen = false }) } }
+                androidx.compose.material3.SnackbarHost(notices, Modifier.align(Alignment.BottomCenter).padding(16.dp))
             }
+        }
+        if (openLink) {
+            var link by remember { mutableStateOf("") }
+            var invalid by remember { mutableStateOf(false) }
+            androidx.compose.material3.AlertDialog(
+                onDismissRequest = { openLink = false },
+                title = { Text("Open link") },
+                text = {
+                    androidx.compose.material3.OutlinedTextField(
+                        link, { link = it; invalid = false }, label = { Text("YouTube Music link or room invite") },
+                        singleLine = true, isError = invalid, modifier = Modifier.fillMaxWidth(),
+                        supportingText = if (invalid) ({ Text("Enter a valid link.") }) else null,
+                    )
+                },
+                confirmButton = {
+                    TextButton(onClick = { if (DesktopLinks.submit(link)) openLink = false else invalid = true }) { Text("Open") }
+                },
+                dismissButton = { TextButton(onClick = { openLink = false }) { Text("Cancel") } },
+            )
         }
     }
 }
@@ -332,14 +411,26 @@ private fun Pages(
         val opened = shown.opened
         when {
             opened is ShelfItem && opened.browseId?.startsWith("UC") == true -> ArtistView(opened, onOpen)
+            opened is ShelfItem && opened.browseId?.startsWith("MPSP") == true -> PodcastShowPage(opened.browseId!!)
             opened is ShelfItem -> CollectionPage(opened)
+            opened is PodcastKey -> PodcastShowPage(opened.id)
+            opened is AudiobooksKey -> AudiobooksPage { onOpenAny(AudiobookKey(it)) }
+            opened is AudiobookKey -> AudiobookPage(opened.id)
             opened is PlaylistKey -> PlaylistPage(opened.id, onBack = onBack)
             opened is MoodKey -> MoodPage(opened, onOpen)
             opened is DailyMixes.Mix -> MixPage(opened)
+            opened is AccountLibraryKey -> AccountLibraryPage(onOpenAny, { onOpenAny(Tab.SETTINGS) })
+            opened is SpotifyLibraryKey -> SpotifyLibraryPage { onOpenAny(Tab.SETTINGS) }
+            opened is AccountPlaylistKey -> AccountPlaylistPage(opened, onBack)
+            opened is SmartPlaylistKey -> SmartPlaylistPage(opened.id, onBack, onPlaylist)
             shown.tab == Tab.SEARCH -> SearchPage(query, onQuery, searches, onSearch, onOpenAny)
             shown.tab == Tab.NEW -> NewPage(onOpen)
             shown.tab == Tab.HOME -> HomePage(onOpen = onOpen, onOpenAny = onOpenAny)
-            shown.tab == Tab.LIBRARY -> shown.shelf?.let { LibraryPage(it, onShelf, onPlaylist) }
+            shown.tab == Tab.PODCASTS -> PodcastsPage({ onOpenAny(PodcastKey(it)) }, { onOpenAny(AudiobooksKey) })
+            shown.tab == Tab.RADIO -> RadioPage()
+            shown.tab == Tab.ROOMS -> RoomsPage()
+            shown.tab == Tab.RECOGNIZE -> RecognizePage()
+            shown.tab == Tab.LIBRARY -> shown.shelf?.let { LibraryPage(it, onShelf, onPlaylist, onOpenAny) }
                 ?: LibraryHome(onShelf = onShelf, onPlaylist = onPlaylist, onOpenAny = onOpenAny)
             shown.tab == Tab.SETTINGS -> SettingsPage()
             else -> SongPage("Up next", queue, "The queue is empty.", current = index, onPlay = { _, i -> Player.playAt(i) })
@@ -373,31 +464,62 @@ private const val MATERIAL_PAGE_ALPHA = 0.45f
  */
 @Composable
 internal fun SearchPage(query: String, onQuery: (String) -> Unit, searches: Int, onSearch: () -> Unit, onOpenAny: (Any) -> Unit) {
-    var results by remember { mutableStateOf<List<Song>?>(null) }
-    var searching by remember { mutableStateOf(false) }
-    var failed by remember { mutableStateOf(false) }
-    var shownFor by remember { mutableStateOf("") }
+    var request by remember { mutableStateOf<Pair<String, Int>?>(null) }
+    val submitted = request?.first
+    var filter by remember { mutableStateOf(SearchFilter.ALL) }
+    val library by AppSettings.library.collectAsState()
+    var results by remember(request, filter, library.hideExplicit) { mutableStateOf<InnertubeParser.SearchPage?>(null) }
+    var failed by remember(request, filter, library.hideExplicit) { mutableStateOf(false) }
+    var moreFailed by remember(request, filter, library.hideExplicit) { mutableStateOf(false) }
+    var loadingMore by remember(request, filter, library.hideExplicit) { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
     val recentSearches by AppSettings.recentSearches.collectAsState()
     val moods by produceState(emptyList<com.opentune.data.model.MoodGenre>()) { value = runCatching { Pages.moods() }.getOrDefault(emptyList()) }
     LaunchedEffect(searches) {
+        if (searches == 0) return@LaunchedEffect
         val q = query.trim().takeIf { it.isNotEmpty() } ?: return@LaunchedEffect
         AppSettings.addRecentSearch(q)
-        searching = true
-        failed = false
-        runCatching { Pages.search(q) }.onSuccess { results = it; shownFor = q }.onFailure { failed = true }
-        searching = false
+        request = q to searches
     }
-    // Cleared: back to browsing.
-    LaunchedEffect(query) { if (query.isBlank()) { results = null; shownFor = "" } }
+    LaunchedEffect(query.isBlank()) { if (query.isBlank()) { request = null; filter = SearchFilter.ALL } }
+    LaunchedEffect(request, filter, library.hideExplicit) {
+        val q = submitted ?: return@LaunchedEffect
+        try {
+            results = searchPage(Innertube.search(q, filter.params), filter, library.hideExplicit)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            failed = true
+        }
+    }
+    val typing = query.trim().takeIf { it.length >= 2 && it != submitted }
+    var liveRows by remember(typing) { mutableStateOf(emptyList<SearchResult>()) }
+    LaunchedEffect(typing, library.hideExplicit) {
+        val q = typing ?: return@LaunchedEffect
+        delay(350)
+        try {
+            liveRows = searchPage(Innertube.searchTypeahead(q), SearchFilter.ALL, library.hideExplicit).rows.take(8)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            // Search with Enter remains available when typeahead is offline.
+        }
+    }
     val focus = remember { androidx.compose.ui.focus.FocusRequester() }
     LaunchedEffect(Unit) { runCatching { focus.requestFocus() } }
     val found = results
     ScrollPage("Search", spacing = 22.dp) {
         item(key = "field") { SearchField(query, onQuery, onSearch, focus) }
+        if (submitted != null && typing == null) item(key = "filters") {
+            LazyRow(contentPadding = PaddingValues(horizontal = GUTTER), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(SearchFilter.entries, key = { it.name }) { choice ->
+                    FilterChip(selected = choice == filter, onClick = { filter = choice }, label = { Text(choice.label) })
+                }
+            }
+        }
         when {
-            searching -> item(key = "loading") { Loading() }
-            failed -> item(key = "failed") { Message("Couldn't search", "Check your connection and try again.") }
-            found == null -> {
+            typing != null -> if (liveRows.isNotEmpty()) searchRows(liveRows, false, onOpenAny)
+            submitted == null -> {
                 if (recentSearches.isNotEmpty()) item(key = "recent") { RecentSearches(recentSearches) { onQuery(it); onSearch() } }
                 if (moods.isNotEmpty()) item(key = "browse") {
                     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -407,16 +529,78 @@ internal fun SearchPage(query: String, onQuery: (String) -> Unit, searches: Int,
                 }
                 if (recentSearches.isEmpty() && moods.isEmpty()) item(key = "hint") { Message("Find something to play", "Type a song or an artist and press Enter.", icon = Icons.Rounded.Search) }
             }
-            found.isEmpty() -> item(key = "none") { Message("No results for “$shownFor”", "Try different words.", icon = Icons.Rounded.SearchOff) }
+            failed -> item(key = "failed") { Message("Couldn't search", "Check your connection and try again.", action = "Try again" to onSearch) }
+            found == null -> item(key = "loading") { Loading() }
             else -> {
-                item(key = "top") { TopResult(found) }
-                item(key = "all-head") {
-                    Text("Songs", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = GUTTER, vertical = 4.dp))
+                if (found.rows.isEmpty()) item(key = "none") {
+                    Message("No results for “$submitted”", "Try different words.", icon = Icons.Rounded.SearchOff)
                 }
-                tracks(found)
+                searchRows(found.rows, filter == SearchFilter.ALL, onOpenAny, videos = filter == SearchFilter.VIDEOS)
+                found.continuation?.let { token ->
+                    item(key = "more") {
+                        TextButton(modifier = Modifier.padding(horizontal = GUTTER), enabled = !loadingMore, onClick = {
+                            loadingMore = true
+                            moreFailed = false
+                            scope.launch {
+                                try {
+                                    val next = searchPage(Innertube.searchContinuation(token), filter, library.hideExplicit)
+                                    if (results === found) results = InnertubeParser.SearchPage(
+                                        (found.rows + next.rows).distinctBy(::searchRowId), next.continuation.takeUnless { it == token },
+                                    )
+                                } catch (cancelled: CancellationException) {
+                                    throw cancelled
+                                } catch (_: Exception) {
+                                    moreFailed = true
+                                } finally {
+                                    loadingMore = false
+                                }
+                            }
+                        }) {
+                            Text(when {
+                                loadingMore -> "Loading more…"
+                                moreFailed -> "Try again"
+                                else -> "Load more"
+                            })
+                        }
+                    }
+                }
             }
         }
     }
+}
+
+private fun searchPage(response: kotlinx.serialization.json.JsonObject, filter: SearchFilter, hideExplicit: Boolean): InnertubeParser.SearchPage {
+    val page = InnertubeParser.parseSearchPage(response, includeVideos = filter == SearchFilter.VIDEOS)
+    return page.copy(rows = ContentFilter.results(page.rows, hideExplicit))
+}
+
+private fun searchRowId(row: SearchResult): String = when (row) {
+    is SearchResult.TopTrack -> "v:${row.song.videoId}"
+    is SearchResult.Track -> "v:${row.song.videoId}"
+    is SearchResult.Browse -> "b:${row.item.browseId}"
+}
+
+private fun androidx.compose.foundation.lazy.LazyListScope.searchRows(
+    rows: List<SearchResult>, promoted: Boolean, onOpen: (Any) -> Unit, videos: Boolean = false,
+) {
+    val songs = Pages.songsIn(rows)
+    if (promoted && rows.firstOrNull() is SearchResult.TopTrack && songs.isNotEmpty()) item(key = "top") { TopResult(songs) }
+    val grouped = rows.filterIsInstance<SearchResult.Browse>().map { it.item }.groupBy { it.type }
+    grouped.forEach { (type, items) ->
+        val title = when (type) {
+            BrowseType.ALBUM -> "Albums"
+            BrowseType.ARTIST -> "Artists"
+            BrowseType.PLAYLIST -> "Playlists"
+            BrowseType.OTHER -> "More results"
+        }
+        val cards = items.map { ShelfItem(it.title, it.subtitle, it.thumbnailUrl, null, it.browseId, it.explicit) }
+        item(key = "browse-${type.name}") { ShelfRow(Pages.Shelf(title, cards)) { onOpen(it) } }
+    }
+    if (songs.isNotEmpty()) item(key = "all-head") {
+        Text(if (videos) "Videos" else "Songs", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold,
+            modifier = Modifier.padding(horizontal = GUTTER, vertical = 4.dp))
+    }
+    tracks(songs)
 }
 
 /** The search box: wide, rounded and frosted, with a clear button once there's something in it. */
@@ -561,12 +745,12 @@ private fun RecentSearches(queries: List<String>, onPick: (String) -> Unit) {
  * pages with a cover of their own, your playlists as tiles, your server.
  */
 @Composable
-internal fun LibraryPage(shelf: Shelf, onShelf: (Shelf) -> Unit, onPlaylist: (String) -> Unit) {
-    val liked by Library.liked.collectAsState()
+internal fun LibraryPage(shelf: Shelf, onShelf: (Shelf) -> Unit, onPlaylist: (String) -> Unit, onOpenAny: (Any) -> Unit = {}) {
+    val liked by DesktopAccount.liked.collectAsState()
     val played by Library.recent.collectAsState()
     val server by Subsonic.server.collectAsState()
     when (shelf) {
-        Shelf.LIKED -> CollectionLayout("Liked songs", liked.firstOrNull()?.thumbnailUrl, liked, failed = false, onRemove = { Library.setLiked(it, false) }, empty = "Click the heart on a song to keep it here.") {
+        Shelf.LIKED -> CollectionLayout("Liked songs", liked.firstOrNull()?.thumbnailUrl, liked, failed = false, onRemove = { DesktopAccount.setLiked(it, false) }, empty = "Click the heart on a song to keep it here.") {
             CollectionHero(
                 cover = { m -> IconCover(Icons.Rounded.Favorite, listOf(Color(0xFF5B3CFF), Color(0xFFB7A6FF)), m) },
                 coverUrl = liked.firstOrNull()?.thumbnailUrl, kind = "Playlist", title = "Liked songs", subtitle = "Songs you hearted, newest first", songs = liked,
@@ -585,6 +769,10 @@ internal fun LibraryPage(shelf: Shelf, onShelf: (Shelf) -> Unit, onPlaylist: (St
         Shelf.SERVER -> Box(Modifier.fillMaxSize().padding(top = LocalPageTop.current + 12.dp)) {
             if (server != null) ServerShelf() else Message("No music server connected", "Connect one in Settings.")
         }
+        Shelf.LOCAL -> LocalMusicPage()
+        Shelf.DOWNLOADS -> DownloadsPage()
+        Shelf.SMART -> SmartPlaylistsPage { onOpenAny(SmartPlaylistKey(it)) }
+        Shelf.REPLAY -> ReplayPage()
     }
 }
 
@@ -596,7 +784,10 @@ internal fun IconCover(icon: ImageVector, colours: List<Color>, modifier: Modifi
     }
 }
 
-internal enum class Shelf(val label: String) { LIKED("Liked songs"), PLAYLISTS("Playlists"), SERVER("Your server"), RECENT("Recently played") }
+internal enum class Shelf(val label: String) {
+    LIKED("Liked songs"), PLAYLISTS("Playlists"), SERVER("Your server"), RECENT("Recently played"),
+    LOCAL("Local files"), DOWNLOADS("Downloads"), SMART("Smart playlists"), REPLAY("Replay"),
+}
 
 /** A plain list of songs under a big title, such as Up next. */
 @Composable
@@ -630,6 +821,7 @@ internal fun CollectionPage(item: ShelfItem) {
             coverUrl = item.thumbnailUrl, kind = kind, title = item.title,
             subtitle = item.subtitle.split(" • ").filter { it !in setOf("Album", "Single", "EP", "Playlist") }.joinToString(" • "),
             songs = songs,
+            extra = { songs?.let { DownloadAllButton(it) } },
         )
     }
 }
@@ -639,7 +831,7 @@ internal fun CollectionPage(item: ShelfItem) {
 /** Songs, one to a row: play on click, add to a playlist, like, and [onRemove] where a list can lose them. */
 @Composable
 internal fun SongList(songs: List<Song>, current: Int = -1, onRemove: ((Song) -> Unit)? = null, onPlay: (List<Song>, Int) -> Unit) {
-    val liked by Library.liked.collectAsState()
+    val liked by DesktopAccount.liked.collectAsState()
     val queue by Player.queue.collectAsState()
     val index by Player.index.collectAsState()
     val playingId = queue.getOrNull(index)?.videoId
@@ -675,13 +867,15 @@ internal fun SongList(songs: List<Song>, current: Int = -1, onRemove: ((Song) ->
                         maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
+                DownloadTrackButton(song)
                 Box {
                     IconButton(onClick = { adding = true }) {
                         Icon(Icons.AutoMirrored.Rounded.PlaylistAdd, "Add to playlist", tint = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     AddToPlaylistMenu(song, adding) { adding = false }
                 }
-                LikeButton(isLiked, { Library.setLiked(song, !isLiked) }, size = 24.dp)
+                LikeButton(isLiked, { DesktopAccount.setLiked(song, !isLiked) }, size = 24.dp)
+                SuggestionActions(song)
                 if (onRemove != null) {
                     IconButton(onClick = { onRemove(song) }) {
                         Icon(Icons.Rounded.Close, "Remove", tint = MaterialTheme.colorScheme.onSurfaceVariant)

@@ -39,7 +39,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
-import androidx.compose.material3.Text
+import com.opentune.ui.theme.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -65,11 +65,15 @@ import com.opentune.core.BuildConfig
 import com.opentune.data.settings.AppSettings
 import com.opentune.data.settings.EQ_BANDS_HZ
 import com.opentune.data.settings.EqPreset
+import com.opentune.data.settings.Recommender
 import com.opentune.data.subsonic.Subsonic
 import kotlinx.coroutines.launch
 
 /** The groups of settings, in the bar at the top and down the page. */
-private enum class Group(val label: String) { LOOK("Look"), PLAYBACK("Playback"), SOURCES("Sources"), SOUND("Equalizer"), LYRICS("Lyrics"), ACCOUNTS("Accounts"), SERVER("Your server"), ABOUT("About") }
+private enum class Group(val label: String) {
+    LOOK("Look"), PLAYBACK("Playback"), SOURCES("Sources"), SOUND("Equalizer"), LYRICS("Lyrics"),
+    ACCOUNTS("Accounts"), SERVER("Your server"), DOWNLOADS("Downloads"), DATA("Data"), ABOUT("About"),
+}
 
 /**
  * Settings, grouped into cards down a centred column, with a bar of the
@@ -103,10 +107,21 @@ internal fun SettingsPage() {
                             Group.SOURCES -> SourcesSection()
                             Group.SOUND -> EqualizerSection()
                             Group.LYRICS -> LyricsSection()
-                            Group.ACCOUNTS -> ConnectedSection()
+                            Group.ACCOUNTS -> Column(verticalArrangement = Arrangement.spacedBy(18.dp)) {
+                                ConnectedSection()
+                                Section("Spotify") { SpotifyAccountSection() }
+                                Section("ListenBrainz") { ListenBrainzSettings() }
+                            }
                             Group.SERVER -> ServerSection()
+                            Group.DOWNLOADS -> Section("Downloads") { DownloadPreferences() }
+                            Group.DATA -> Column(verticalArrangement = Arrangement.spacedBy(18.dp)) {
+                                Section("Hidden songs and artists") { HiddenMusicSettings() }
+                                Section("Import a playlist") { PlaylistImportSettings() }
+                                Section("Backup") { BackupSettings() }
+                            }
                             Group.ABOUT -> Section("About") {
                                 Text("OpenTune ${BuildConfig.VERSION_NAME} for computers", style = MaterialTheme.typography.bodyLarge)
+                                MacUpdateSettings()
                                 Text(
                                     "Settings and playlists are kept in ${appContext.getFilesDir().parentFile.absolutePath}.",
                                     style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -178,8 +193,63 @@ private fun PlaybackSection() {
     val playback by AppSettings.playback.collectAsState()
     val sound by AppSettings.sound.collectAsState()
     val sleep by Player.sleep.collectAsState()
+    val library by AppSettings.library.collectAsState()
     Section("Playback") {
         SwitchRow("Autoplay", "When the queue ends, keep going with similar songs", playback.autoplay, AppSettings::setAutoplay)
+        Choices("Recommendation source", Recommender.entries, playback.recommender, {
+            if (it == Recommender.SPOTIFY) "Spotify (public)" else it.label
+        }) { selected ->
+            AppSettings.updatePlayback { it.copy(recommender = selected) }
+        }
+        SwitchRow("Smart Shuffle", "Add recommendations between the songs already in the queue.", playback.smartShuffle) { on ->
+            AppSettings.updatePlayback { it.copy(smartShuffle = on) }
+        }
+        SwitchRow("Hide explicit content", "Keep tracks marked explicit out of discovery and autoplay.", library.hideExplicit) { on ->
+            AppSettings.updateLibrary { it.copy(hideExplicit = on) }
+        }
+        Choices("Streaming quality", com.opentune.data.settings.AudioQuality.entries, playback.wifiQuality, { it.label }) { quality ->
+            AppSettings.updatePlayback { it.copy(wifiQuality = quality) }
+        }
+        Text("Audio output", style = MaterialTheme.typography.bodyLarge)
+        AudioOutputPicker()
+        SwitchRow("High-resolution PCM", "Use 32-bit float or 24-bit PCM when the output supports it.", playback.floatOutput) { on ->
+            AppSettings.updatePlayback { it.copy(floatOutput = on) }
+        }
+        SwitchRow("Skip silence", "Shorten silent passages longer than one second.", playback.skipSilence) { on ->
+            AppSettings.updatePlayback { it.copy(skipSilence = on) }
+        }
+        SwitchRow("Loudness normalization", "Keep songs at a similar volume.", playback.loudnessNormalization) { on ->
+            AppSettings.updatePlayback { it.copy(loudnessNormalization = on) }
+        }
+        if (playback.loudnessNormalization) {
+            Choices("Volume level", com.opentune.data.settings.VolumeLevel.entries, playback.volumeLevel, { it.label }) { level ->
+                AppSettings.updatePlayback { it.copy(volumeLevel = level) }
+            }
+        }
+        SwitchRow("Automix", "Match transitions to the ends and beginnings of tracks.", playback.automix) { on ->
+            AppSettings.updatePlayback { it.copy(automix = on) }
+        }
+        if (playback.automix) {
+            Choices("Automix analysis", com.opentune.data.settings.AutomixPerformance.entries, playback.automixPerformance, { it.label }) { performance ->
+                AppSettings.updatePlayback { it.copy(automixPerformance = performance) }
+            }
+        } else {
+            LabelledSlider("Crossfade", playback.crossfadeSeconds.toFloat(), 0f..12f, "%.0f s") { seconds ->
+                AppSettings.updatePlayback { it.copy(crossfadeSeconds = kotlin.math.round(seconds).toInt()) }
+            }
+        }
+        SwitchRow("SponsorBlock", "Skip marked sections of YouTube videos.", playback.sponsorBlock) { on ->
+            AppSettings.updatePlayback { it.copy(sponsorBlock = on) }
+        }
+        if (playback.sponsorBlock) {
+            com.opentune.data.sponsorblock.SponsorBlock.CATEGORIES.forEach { (id, category) ->
+                SwitchRow(category.label, null, id in playback.sponsorBlockCategories) { on ->
+                    AppSettings.updatePlayback {
+                        it.copy(sponsorBlockCategories = if (on) it.sponsorBlockCategories + id else it.sponsorBlockCategories - id)
+                    }
+                }
+            }
+        }
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("Speed", style = MaterialTheme.typography.bodyLarge, modifier = Modifier.width(120.dp))
             Slider(
@@ -197,6 +267,7 @@ private fun PlaybackSection() {
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun SleepChips(sleep: Player.Sleep?) {
+    val playback by AppSettings.playback.collectAsState()
     Column {
         Text("Sleep timer", style = MaterialTheme.typography.bodyLarge)
         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 6.dp)) {
@@ -206,6 +277,10 @@ internal fun SleepChips(sleep: Player.Sleep?) {
             }
             FilterChip(sleep == Player.Sleep.EndOfSong, { Player.sleepAtEndOfSong() }, label = { Text("End of song") })
         }
+        if (sleep is Player.Sleep.At) TextButton(onClick = Player::extendSleep) { Text("+5 min") }
+        SwitchRow("Sleep timer fade-out", "Gradually lower the volume before the timer stops playback.", playback.sleepWindDown) { on ->
+            AppSettings.updatePlayback { it.copy(sleepWindDown = on) }
+        }
     }
 }
 
@@ -213,7 +288,30 @@ internal fun SleepChips(sleep: Player.Sleep?) {
 @Composable
 private fun EqualizerSection() {
     val eq by AppSettings.equalizer.collectAsState()
+    val playback by AppSettings.playback.collectAsState()
+    val sound by AppSettings.sound.collectAsState()
     Section("Equalizer") {
+        HeadphoneSettings()
+        if (Ffmpeg.available) {
+            Choices("Remix", com.opentune.data.settings.RemixPreset.entries, com.opentune.data.settings.RemixPreset.matching(sound),
+                { it?.label ?: "Custom" }) { preset -> preset?.let { chosen -> AppSettings.updateSound { chosen.sound } } }
+            LabelledSlider("Pitch", sound.pitch, 0.5f..2f, "%.2f×") { pitch -> AppSettings.updateSound { it.copy(pitch = pitch) } }
+            Choices("Reverb", com.opentune.data.settings.ReverbLevel.entries, sound.reverb, { it.label }) { reverb ->
+                AppSettings.updateSound { it.copy(reverb = reverb) }
+            }
+            Choices("8D audio", com.opentune.data.settings.EightD.entries, sound.eightD, { it.label }) { mode ->
+                AppSettings.updateSound { it.copy(eightD = mode, space = com.opentune.data.settings.Space3DSpeed.OFF) }
+            }
+            Choices("3D sound", com.opentune.data.settings.Space3DSpeed.entries, sound.space, { it.label }) { mode ->
+                AppSettings.updateSound { it.copy(space = mode, eightD = com.opentune.data.settings.EightD.OFF) }
+            }
+        }
+        SwitchRow("Clarity", "Reduce rumble and bring out voices.", playback.clarity) { enabled ->
+            AppSettings.updatePlayback { it.copy(clarity = enabled) }
+        }
+        SwitchRow("Stereo widening", "Give stereo tracks a wider sound stage.", playback.spatialAudio) { enabled ->
+            AppSettings.updatePlayback { it.copy(spatialAudio = enabled) }
+        }
         SwitchRow("Equalizer", "Fifteen bands from 25 Hz to 16 kHz, with the phone's presets", eq.enabled) { on ->
             AppSettings.updateEqualizer { it.copy(enabled = on) }
         }
@@ -353,6 +451,7 @@ private fun AppearanceSection() {
     val theme by AppSettings.theme.collectAsState()
     val ui by AppSettings.ui.collectAsState()
     Section("Look") {
+        DesktopLanguageSettings()
         Choices("Theme", com.opentune.data.settings.ThemeMode.entries, theme.mode, { it.label }) { v -> AppSettings.updateTheme { it.copy(mode = v) } }
         Text("Accent", style = MaterialTheme.typography.bodyLarge)
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -371,6 +470,20 @@ private fun AppearanceSection() {
         if (!ui.reduceBlur) Choices("Glass", com.opentune.data.settings.GlassStyle.entries.filter { it != com.opentune.data.settings.GlassStyle.LIQUID }, ui.glassStyle, { it.label }) { v -> AppSettings.updateUi { it.copy(glassStyle = v) } }
         SwitchRow("Smooth motion", "Pages glide in, covers lift under the pointer, rows rise into place", !ui.reduceAnimation) { on -> AppSettings.updateUi { it.copy(reduceAnimation = !on) } }
         SwitchRow("Colour from the song", "A soft wash of the playing cover's colour behind the pages", theme.colorFromArtwork) { on -> AppSettings.updateTheme { it.copy(colorFromArtwork = on) } }
+        SwitchRow("Sharper album covers", "Use matching high-resolution album art in the player.", ui.albumCovers) { on ->
+            AppSettings.updateUi { it.copy(albumCovers = on) }
+        }
+        SwitchRow("Animated covers", "Loop matching animated Apple Music covers in the player.", ui.animatedCovers) { on ->
+            AppSettings.updateUi { it.copy(animatedCovers = on) }
+        }
+        if (ui.animatedCovers) {
+            Choices("Animated cover quality", com.opentune.data.settings.MotionQuality.entries, ui.motionQuality, { it.label }) { quality ->
+                AppSettings.updateUi { it.copy(motionQuality = quality) }
+            }
+            SwitchRow("Animated covers on unmetered networks", "Use an unmetered connection for animated covers.", ui.animatedCoversWifiOnly) { on ->
+                AppSettings.updateUi { it.copy(animatedCoversWifiOnly = on) }
+            }
+        }
         SwitchRow("Artist signatures (beta)", "An artist's handwritten signature over their photo, in place of their name, when there's one", ui.artistSignatures) { on ->
             AppSettings.updateUi { it.copy(artistSignatures = on) }
         }
@@ -448,6 +561,19 @@ private fun ConnectedSection() {
     val discordStatus by DiscordPresence.status.collectAsState()
     val lastFm by LastFmDesktop.state.collectAsState()
     val waiting by LastFmDesktop.waiting.collectAsState()
+    Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        Section("YouTube Music") { YouTubeAccountSection() }
+        SocialConnectionsSection(discord, discordStatus, lastFm, waiting)
+    }
+}
+
+@Composable
+private fun SocialConnectionsSection(
+    discord: Boolean,
+    discordStatus: DiscordPresence.Status,
+    lastFm: LastFmDesktop.State,
+    waiting: Boolean,
+) {
     var problem by remember { mutableStateOf<String?>(null) }
     var key by remember { mutableStateOf(lastFm.ownKey) }
     var secret by remember { mutableStateOf(lastFm.ownSecret) }

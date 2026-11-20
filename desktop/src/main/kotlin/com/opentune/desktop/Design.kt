@@ -40,7 +40,7 @@ import androidx.compose.material.icons.rounded.Schedule
 import androidx.compose.material.icons.rounded.Shuffle
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
+import com.opentune.ui.theme.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
@@ -245,7 +245,7 @@ internal fun TrackRow(i: Int, song: Song, songs: List<Song>, onRemove: ((Song) -
     val queue by Player.queue.collectAsState()
     val index by Player.index.collectAsState()
     val playing by Player.playing.collectAsState()
-    val liked by Library.liked.collectAsState()
+    val liked by DesktopAccount.liked.collectAsState(initial = emptyList())
     val isLiked = liked.any { it.videoId == song.videoId }
     val current = queue.getOrNull(index)?.videoId == song.videoId
     var adding by remember { mutableStateOf(false) }
@@ -272,11 +272,13 @@ internal fun TrackRow(i: Int, song: Song, songs: List<Song>, onRemove: ((Song) -
             Text(song.artist, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
         Row(Modifier.graphicsLayer { alpha = tools }, verticalAlignment = Alignment.CenterVertically) {
+            DownloadTrackButton(song)
             Box {
                 HoverIcon(Icons.AutoMirrored.Rounded.PlaylistAdd, "Add to playlist", size = 32.dp, iconSize = 19.dp) { adding = true }
                 AddToPlaylistMenu(song, adding) { adding = false }
             }
-            LikeButton(isLiked, { Library.setLiked(song, !isLiked) }, size = 20.dp)
+            LikeButton(isLiked, { DesktopAccount.setLiked(song, !isLiked) }, size = 20.dp)
+            SuggestionActions(song)
         }
         Text(song.durationText.orEmpty(), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.width(52.dp).padding(start = 10.dp))
         if (onRemove != null) {
