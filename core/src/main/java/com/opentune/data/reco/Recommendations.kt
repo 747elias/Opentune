@@ -31,7 +31,7 @@ import kotlinx.coroutines.withContext
  * few hours, as long as enough are left.
  *
  * With Spotify connected, Spotify's picks are its song radio for the
- * listener ([SpotifyRadio.personal]), each matched on YouTube Music to the
+ * listener ([SpotifyPersonalRadio.tracks]), each matched on YouTube Music to the
  * same length, in Spotify's order. Likes can be synced to Spotify separately;
  * external audio playback is not submitted as Spotify listening history.
  */
@@ -123,7 +123,7 @@ object Recommendations {
     private suspend fun picks(seed: Song, engine: Recommender): Picks {
         val artist = mainArtist(seed.artist)
         return when (engine) {
-            Recommender.SPOTIFY -> SpotifyRadio.personal(seed.title, artist, seed.albumName, durationMs(seed.durationText))
+            Recommender.SPOTIFY -> SpotifyPersonalRadio.tracks(seed.title, artist, seed.albumName, durationMs(seed.durationText))
                 ?.takeIf { it.isNotEmpty() }?.let { Picks(it, exact = true) }
                 ?: Picks(SpotifyRadio.radio(seed.title, artist, seed.albumName), exact = false)
             Recommender.JIOSAAVN -> Picks(JioSaavnRadio.radio(seed.title, artist), exact = false)

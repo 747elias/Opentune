@@ -48,7 +48,7 @@ private sealed interface PodcastMatches {
 }
 
 @Composable
-internal fun PodcastsPage(onOpenShow: (String) -> Unit) {
+internal fun PodcastsPage(onOpenShow: (String) -> Unit, onOpenAudiobooks: () -> Unit) {
     val subscriptions by Podcasts.subscriptions.collectAsState()
     val progress by Podcasts.progress.collectAsState()
     val inProgress = remember(progress) { Podcasts.inProgress(progress).take(10) }
@@ -117,6 +117,9 @@ internal fun PodcastsPage(onOpenShow: (String) -> Unit) {
                 }
             }
         } else {
+            item(key = "audiobooks") {
+                TextButton(onClick = onOpenAudiobooks, modifier = Modifier.padding(horizontal = GUTTER)) { Text("Audiobooks") }
+            }
             if (inProgress.isNotEmpty()) {
                 item { DiscoveryTitle("Continue listening") }
                 items(inProgress, key = { "resume:${it.episode.videoId}" }) { p ->
@@ -298,7 +301,7 @@ private fun playEpisodes(episodes: List<PodcastEpisode>, index: Int) {
     Player.playAll(episodes.map { it.toSong() }, index)
 }
 
-private suspend fun <T> podcastRequest(block: suspend () -> T): Result<T> = try {
+internal suspend fun <T> podcastRequest(block: suspend () -> T): Result<T> = try {
     Result.success(block())
 } catch (cancelled: CancellationException) {
     throw cancelled

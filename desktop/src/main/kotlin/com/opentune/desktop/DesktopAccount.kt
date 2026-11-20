@@ -71,6 +71,11 @@ internal object DesktopAccount {
 
     suspend fun reportHistory(report: suspend () -> Unit) = writes.withLock { report() }
 
+    suspend fun <T> writeAsAccount(expected: Int, action: suspend () -> T): T = writes.withLock {
+        check(signedIn.value && expected == revision.value) { "Your YouTube Music account changed. Open comments again." }
+        action()
+    }
+
     suspend fun acceptSession(cookie: String) {
         loading?.cancel()
         writes.withLock { AccountStore.signIn(cookie) }

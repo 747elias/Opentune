@@ -37,6 +37,7 @@ val sharedFromCore = listOf(
     "com/opentune/data/innertube/Innertube.kt",
     "com/opentune/data/innertube/InnertubeParser.kt",
     "com/opentune/data/innertube/PlayerClient.kt",
+    "com/opentune/data/comments/SongComments.kt",
     "com/opentune/data/podcasts/PodcastParser.kt",
     "com/opentune/data/podcasts/PodcastModels.kt",
     "com/opentune/data/recognize/Signature.kt",
@@ -51,12 +52,15 @@ val sharedFromCore = listOf(
     "com/opentune/data/autoeq/AutoEq.kt",
     "com/opentune/playback/dsp/Space3D.kt",
     "com/opentune/data/podcasts/Podcasts.kt",
+    "com/opentune/data/audiobooks/Audiobooks.kt",
     "com/opentune/data/radio/Radio.kt",
     "com/opentune/data/reco/JioSaavnRadio.kt",
+    "com/opentune/data/reco/SpotifyRadio.kt",
     "com/opentune/data/Http.kt",
     "com/opentune/data/DebugLog.kt",
     "com/opentune/data/AppLog.kt",
     "com/opentune/data/TrackIds.kt",
+    "com/opentune/data/ContentFilter.kt",
     "com/opentune/data/RoundRobin.kt",
     "com/opentune/data/download/RangedFetch.kt",
     "com/opentune/data/download/SmartDownloadRules.kt",
@@ -104,6 +108,7 @@ val sharedFromCore = listOf(
     "com/opentune/data/lyrics/Lyrics.kt",
     "com/opentune/data/lyrics/LyricCardFormat.kt",
     "com/opentune/data/lyrics/LyricsRepository.kt",
+    "com/opentune/data/lyrics/Romanization.kt",
     "com/opentune/data/lyrics/LyricsQuality.kt",
     "com/opentune/data/lyrics/SongParts.kt",
     "com/opentune/data/lyrics/BetterLyrics.kt",
@@ -273,6 +278,7 @@ dependencies {
     // YouTube's player code runs on GraalJS, with Rhino as the fallback (see JavaScript.java).
     implementation("org.graalvm.polyglot:polyglot:24.1.2")
     implementation("org.graalvm.polyglot:js-community:24.1.2")
+    implementation("org.graalvm.shadowed:icu4j:24.1.2")
     implementation("org.mozilla:rhino:1.8.1")
     implementation("org.mozilla:rhino-engine:1.8.1")
 

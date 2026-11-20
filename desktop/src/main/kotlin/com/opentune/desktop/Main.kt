@@ -53,6 +53,7 @@ fun main(args: Array<String>) {
     DesktopSpotify.init(appContext)
     com.opentune.data.radio.Radio.init(appContext)
     com.opentune.data.podcasts.Podcasts.init(appContext)
+    com.opentune.data.audiobooks.Audiobooks.init(appContext)
     com.opentune.data.library.ResumePoints.init(appContext)
     com.opentune.data.listenbrainz.ListenBrainz.init(appContext)
     com.opentune.data.autoeq.AutoEq.init(appContext)
@@ -126,11 +127,11 @@ fun main(args: Array<String>) {
             LaunchedEffect(Unit) { MacMediaControls.start() }
             MenuBar {
                 Menu("File") {
-                    Item("Open Audio Files…", onClick = {
+                    if (DesktopWindow.isMac) Item("Open Audio Files…", onClick = {
                         scope.launch { DesktopLifecycle.openAudio(DesktopLocalMusic.chooseFiles(folders = false)) }
-                    }, shortcut = KeyShortcut(Key.O, meta = DesktopWindow.isMac, ctrl = !DesktopWindow.isMac))
+                    }, shortcut = KeyShortcut(Key.O, meta = true))
                     Item("Open Link…", onClick = DesktopLinks::requestOpen,
-                        shortcut = KeyShortcut(Key.L, meta = DesktopWindow.isMac, ctrl = !DesktopWindow.isMac))
+                        shortcut = if (DesktopWindow.isMac) KeyShortcut(Key.L, meta = true) else KeyShortcut(Key.O, ctrl = true))
                     if (DesktopWindow.isMac) Item("Close Window", onClick = closeWindow,
                         shortcut = KeyShortcut(Key.W, meta = true))
                 }

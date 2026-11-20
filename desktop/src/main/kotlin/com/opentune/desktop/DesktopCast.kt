@@ -8,6 +8,7 @@ import com.opentune.cast.Dlna
 import com.opentune.cast.DlnaDiscovery
 import com.opentune.cast.Receiver
 import com.opentune.cast.RemoteState
+import com.opentune.data.audiobooks.Audiobooks
 import com.opentune.data.isYouTubeId
 import com.opentune.data.model.Song
 import com.opentune.data.model.durationMillis
@@ -137,6 +138,7 @@ internal object DesktopCast {
         val source = when {
             local != null -> CastServer.Source.OnPhone(local, contentType(local))
             Radio.isRadio(id) -> CastServer.Source.Web("audio/mpeg") { requireNotNull(Radio.streamUrl(id)) to emptyMap() }
+            Audiobooks.isChapter(id) -> CastServer.Source.Web("audio/mpeg") { Audiobooks.urlOf(id) to emptyMap() }
             Subsonic.isSubsonic(id) -> CastServer.Source.Web("audio/mpeg") {
                 requireNotNull(Subsonic.streamUrl(id)).replace("format=raw", "format=mp3&maxBitRate=320") to emptyMap()
             }

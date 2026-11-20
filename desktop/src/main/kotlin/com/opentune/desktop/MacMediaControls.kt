@@ -85,6 +85,7 @@ internal object MacMediaControls {
     fun start() {
         if (!DesktopWindow.isMac) return
         val active = runCatching { bridge }.getOrNull() ?: return
+        smartNetworkAvailable()
         active.opentune_install_media_commands(commands)
         scope.launch {
             while (true) {

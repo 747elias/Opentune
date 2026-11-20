@@ -118,7 +118,7 @@ object SpotifyWebPlayer {
 
     /** Forget the tokens and answers of a sign-in that has ended. */
     fun signedOut() {
-        com.opentune.data.reco.SpotifyRadio.clearPersonalCache()
+        com.opentune.data.reco.SpotifyPersonalRadio.clear()
         access = null
         client = null
         synchronized(found) { found.clear() }

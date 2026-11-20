@@ -209,6 +209,8 @@ internal fun NowPlaying(track: Song, docked: Boolean, onClose: () -> Unit) {
                     }
                 }
             }
+            val windDown by com.opentune.playback.SleepTimer.windDown.collectAsState()
+            Box(Modifier.matchParentSize().graphicsLayer { alpha = windDown * 0.55f }.background(Color.Black))
         }
         }
     }
@@ -405,6 +407,7 @@ private fun PlayerFoot(song: Song, showLyrics: Boolean, onLyrics: (() -> Unit)?)
     val index by Player.index.collectAsState()
     val liked by DesktopAccount.liked.collectAsState(initial = emptyList())
     val quality by Player.quality.collectAsState()
+    val qualityCheck by Player.qualityCheck.collectAsState()
     val ui by AppSettings.ui.collectAsState()
     val progress = rememberProgress(song)
     val isLiked = liked.any { it.videoId == song.videoId }
@@ -428,7 +431,7 @@ private fun PlayerFoot(song: Song, showLyrics: Boolean, onLyrics: (() -> Unit)?)
             HeartButton(isLiked) { DesktopAccount.setLiked(song, !isLiked) }
             Spacer(Modifier.width(10.dp))
             AudioOutputButton()
-            MoreButton(song)
+            MoreButton(song, checkingQuality = qualityCheck?.busy == true)
         }
         SeekBar(progress, Modifier.padding(top = 14.dp))
         Box(Modifier.fillMaxWidth()) {
@@ -437,6 +440,21 @@ private fun PlayerFoot(song: Song, showLyrics: Boolean, onLyrics: (() -> Unit)?)
             Text(
                 "-" + Time.format((progress.durationMs - progress.positionMs).coerceAtLeast(0)), style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.align(Alignment.CenterEnd),
+            )
+        }
+        qualityCheck?.let { check ->
+            LaunchedEffect(check) {
+                if (!check.busy) {
+                    delay(5_000)
+                    Player.dismissQualityCheck(check)
+                }
+            }
+            Text(
+                check.message,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                textAlign = TextAlign.Center,
             )
         }
         PlayerControls(
@@ -625,11 +643,12 @@ private fun LikeBurst(t: Float, seed: Int, colors: List<Color>, modifier: Modifi
     }
 }
 
-/** More, in a round button: add the song to a playlist. */
+/** Additional actions for the currently playing track. */
 @Composable
-private fun MoreButton(song: Song) {
+private fun MoreButton(song: Song, checkingQuality: Boolean) {
     var open by remember { mutableStateOf(false) }
     var adding by remember { mutableStateOf(false) }
+    var commentingOn by remember { mutableStateOf<Song?>(null) }
     Box {
         Box(
             Modifier.size(46.dp).clip(CircleShape).background(MaterialTheme.colorScheme.surfaceContainerHigh).clickable { open = true },
@@ -641,7 +660,19 @@ private fun MoreButton(song: Song) {
                 leadingIcon = { Icon(Icons.AutoMirrored.Rounded.PlaylistAdd, null) },
                 onClick = { open = false; adding = true },
             )
+            if (com.opentune.data.isYouTubeId(song.videoId)) {
+                if (!com.opentune.data.podcasts.Podcasts.isEpisode(song.videoId)) DropdownMenuItem(
+                    text = { Text("Upgrade quality") },
+                    enabled = !checkingQuality,
+                    onClick = { open = false; Player.requestQualityUpgrade(song.videoId) },
+                )
+                DropdownMenuItem(
+                    text = { Text("Comments") },
+                    onClick = { open = false; commentingOn = song },
+                )
+            }
         }
         AddToPlaylistMenu(song, adding) { adding = false }
     }
+    commentingOn?.let { DesktopComments(it) { commentingOn = null } }
 }

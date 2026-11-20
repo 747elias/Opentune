@@ -65,6 +65,7 @@ import com.opentune.core.BuildConfig
 import com.opentune.data.settings.AppSettings
 import com.opentune.data.settings.EQ_BANDS_HZ
 import com.opentune.data.settings.EqPreset
+import com.opentune.data.settings.Recommender
 import com.opentune.data.subsonic.Subsonic
 import kotlinx.coroutines.launch
 
@@ -195,8 +196,9 @@ private fun PlaybackSection() {
     val library by AppSettings.library.collectAsState()
     Section("Playback") {
         SwitchRow("Autoplay", "When the queue ends, keep going with similar songs", playback.autoplay, AppSettings::setAutoplay)
-        val source = playback.recommender.takeIf { it in DesktopRecommendations.sources } ?: DesktopRecommendations.sources.first()
-        Choices("Recommendation source", DesktopRecommendations.sources, source, { it.label }) { selected ->
+        Choices("Recommendation source", Recommender.entries, playback.recommender, {
+            if (it == Recommender.SPOTIFY) "Spotify (public)" else it.label
+        }) { selected ->
             AppSettings.updatePlayback { it.copy(recommender = selected) }
         }
         SwitchRow("Smart Shuffle", "Add recommendations between the songs already in the queue.", playback.smartShuffle) { on ->
@@ -258,9 +260,6 @@ private fun PlaybackSection() {
             TextButton(onClick = { AppSettings.updateSound { it.copy(speed = 1f) } }, enabled = sound.speed != 1f) { Text("Reset") }
         }
         SleepChips(sleep)
-        SwitchRow("Sleep timer fade-out", "Gradually lower the volume before the timer stops playback.", playback.sleepWindDown) { on ->
-            AppSettings.updatePlayback { it.copy(sleepWindDown = on) }
-        }
     }
 }
 
@@ -268,6 +267,7 @@ private fun PlaybackSection() {
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun SleepChips(sleep: Player.Sleep?) {
+    val playback by AppSettings.playback.collectAsState()
     Column {
         Text("Sleep timer", style = MaterialTheme.typography.bodyLarge)
         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 6.dp)) {
@@ -276,6 +276,10 @@ internal fun SleepChips(sleep: Player.Sleep?) {
                 FilterChip((sleep as? Player.Sleep.At)?.minutes == m, { Player.sleepIn(m) }, label = { Text("$m min") })
             }
             FilterChip(sleep == Player.Sleep.EndOfSong, { Player.sleepAtEndOfSong() }, label = { Text("End of song") })
+        }
+        if (sleep is Player.Sleep.At) TextButton(onClick = Player::extendSleep) { Text("+5 min") }
+        SwitchRow("Sleep timer fade-out", "Gradually lower the volume before the timer stops playback.", playback.sleepWindDown) { on ->
+            AppSettings.updatePlayback { it.copy(sleepWindDown = on) }
         }
     }
 }

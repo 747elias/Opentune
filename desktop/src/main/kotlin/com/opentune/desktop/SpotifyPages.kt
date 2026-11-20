@@ -1,6 +1,7 @@
 package com.opentune.desktop
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -102,6 +103,7 @@ internal fun SpotifyLibraryPage(onSettings: () -> Unit) {
                                 importedPlaylist = selected.id
                                 DesktopPlaylistImport.spotify(selected.name, tracks.map(SpotifyApi.Track::metadata))
                             }) { Text("Copy playlist to OpenTune") }
+                            SpotifyLink("playlist", selected.id)
                             if (state.tracks == null && !busy) {
                                 OutlinedButton(onClick = { DesktopSpotify.openPlaylist(selected) }) { Text("Retry") }
                             }
@@ -122,8 +124,13 @@ internal fun SpotifyLibraryPage(onSettings: () -> Unit) {
                 item { SpotifyHeading("Playlists") }
                 if (state.playlists.isEmpty()) item { SpotifyHeading("Your Spotify library has no playlists.", heading = false) }
                 items(state.playlists, key = { "playlist-${it.id}" }) { playlist ->
-                    TextButton(enabled = !busy, onClick = { DesktopSpotify.openPlaylist(playlist) }, modifier = Modifier.padding(horizontal = GUTTER)) {
-                        Text(playlist.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Row(Modifier.fillMaxWidth().padding(horizontal = GUTTER), verticalAlignment = Alignment.CenterVertically) {
+                        Box(Modifier.weight(1f)) {
+                            TextButton(enabled = !busy, onClick = { DesktopSpotify.openPlaylist(playlist) }) {
+                                Text(playlist.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            }
+                        }
+                        SpotifyLink("playlist", playlist.id)
                     }
                 }
                 item { SpotifyHeading("Liked tracks") }
@@ -137,6 +144,7 @@ internal fun SpotifyLibraryPage(onSettings: () -> Unit) {
                         Text(track.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         Text(track.artists.joinToString { it.name }, maxLines = 1, overflow = TextOverflow.Ellipsis, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
+                    track.id?.let { SpotifyLink("track", it) }
                     IconButton(enabled = !busy, onClick = { DesktopSpotify.setLiked(track, !isLiked) }) {
                         Icon(
                             if (isLiked) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
@@ -148,6 +156,14 @@ internal fun SpotifyLibraryPage(onSettings: () -> Unit) {
             }
         }
     }
+}
+
+@Composable
+private fun SpotifyLink(kind: String, id: String) {
+    var failed by remember(kind, id) { mutableStateOf(false) }
+    TextButton(onClick = {
+        failed = runCatching { DesktopSpotify.openInBrowser(URI("https://open.spotify.com/$kind/$id")) }.isFailure
+    }) { Text(if (failed) "Retry Spotify link" else "Open in Spotify") }
 }
 
 @Composable

@@ -2,6 +2,7 @@ package com.opentune.data.comments
 
 import com.opentune.data.DebugLog as Log
 import com.opentune.data.innertube.Innertube
+import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
@@ -30,6 +31,7 @@ object SongComments {
         /** Written by the video's own channel. */
         val byCreator: Boolean,
         val mine: Boolean,
+        val replyToken: String? = null,
     )
 
     /** A page of comments, the token for the next ([next], null at the end), and the comment box's parameters when signed in. */
@@ -44,25 +46,30 @@ object SongComments {
      */
     suspend fun open(videoId: String, counterpartOf: suspend (String) -> String? = ::musicVideoOf): Thread? {
         val own = runCatching { section(Innertube.webNext(videoId), videoId, fromVideo = false) }
-            .onFailure { if (it is kotlinx.coroutines.CancellationException) throw it; Log.w(TAG, "Comments for $videoId didn't load", it) }
+            .onFailure { if (it is CancellationException) throw it; Log.w(TAG, "Comments for $videoId didn't load", it) }
             .getOrNull() ?: return null
         if (own.first != null) return own
-        val other = runCatching { counterpartOf(videoId) }.getOrNull()?.takeIf { it != videoId } ?: return own
-        val video = runCatching { section(Innertube.webNext(other), other, fromVideo = true) }.getOrNull() ?: return own
+        val other = runCatching { counterpartOf(videoId) }.onFailure { if (it is CancellationException) throw it }
+            .getOrNull()?.takeIf { it != videoId } ?: return own
+        val video = runCatching { section(Innertube.webNext(other), other, fromVideo = true) }
+            .onFailure { if (it is CancellationException) throw it }.getOrNull() ?: return own
         return if (video.first != null) video else own
     }
 
     suspend fun page(token: String): Page? = runCatching { parsePage(Innertube.webContinuation(token)) }
-        .onFailure { if (it is kotlinx.coroutines.CancellationException) throw it; Log.w(TAG, "A page of comments didn't load", it) }
+        .onFailure { if (it is CancellationException) throw it; Log.w(TAG, "A page of comments didn't load", it) }
         .getOrNull()
 
     /** Posts [text]; the comment as posted when YouTube sends it back, or why it wasn't. */
     suspend fun post(createParams: String, text: String): Result<Comment?> = runCatching {
         val r = Innertube.createComment(createParams, text.trim())
         val status = r.str("actionResult", "status")
-        if (status != null && status != "STATUS_SUCCEEDED") error(r.str("actionResult", "feedback", "0", "text")?.takeIf { it.isNotBlank() } ?: "YouTube didn't take the comment")
-        comments(r).firstOrNull()
-    }
+        val comment = comments(r).firstOrNull()
+        if (status != "STATUS_SUCCEEDED" && (status != null || comment == null)) {
+            error(r.str("actionResult", "feedback", "0", "text")?.takeIf { it.isNotBlank() } ?: "YouTube didn't take the comment")
+        }
+        comment
+    }.onFailure { if (it is CancellationException) throw it }
 
     /** The music video YouTube Music pairs with [videoId] (its Song/Video switch), if any. */
     suspend fun musicVideoOf(videoId: String): String? = counterpart(Innertube.next(videoId), videoId)
@@ -92,8 +99,15 @@ object SongComments {
         }
         // In the order YouTube lists the threads; the comments themselves are in the entity list.
         val ordered = items.mapNotNull { item ->
-            val key = (item as? JsonObject)?.str("commentThreadRenderer", "commentViewModel", "commentViewModel", "commentKey")
-            key?.let { keyed[it] }
+            val renderer = item as? JsonObject ?: return@mapNotNull null
+            val thread = renderer["commentThreadRenderer"] as? JsonObject
+            val key = (thread ?: renderer).str("commentViewModel", "commentViewModel", "commentKey")
+                ?: renderer.str("commentViewModel", "commentKey")
+                ?: return@mapNotNull null
+            val comment = keyed[key] ?: return@mapNotNull null
+            val replies = thread?.at("replies", "commentRepliesRenderer", "contents") ?: return@mapNotNull comment
+            val token = findFirst(replies) { it["continuationCommand"] is JsonObject }?.str("continuationCommand", "token")
+            comment.copy(replyToken = token)
         }.ifEmpty { byKey.values.toList() }
         val next = items.lastOrNull()?.let { last ->
             val c = (last as? JsonObject)?.get("continuationItemRenderer") as? JsonObject ?: return@let null

@@ -1,6 +1,7 @@
 package com.opentune.desktop
 
 import com.opentune.data.Http
+import com.opentune.data.audiobooks.Audiobooks
 import com.opentune.data.library.ResumePoints
 import com.opentune.data.local.LocalMusic
 import com.opentune.data.podcasts.Podcasts
@@ -26,13 +27,16 @@ import javafx.scene.media.Media
 import javafx.scene.media.MediaPlayer
 import javafx.util.Duration
 import kotlin.math.pow
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asSharedFlow
@@ -74,6 +78,14 @@ object Player {
     val volume: StateFlow<Double> = _volume.asStateFlow()
     private val _quality = MutableStateFlow<Quality?>(null)
     val quality: StateFlow<Quality?> = _quality.asStateFlow()
+
+    internal data class QualityCheck(val message: String, val busy: Boolean = false)
+    private val _qualityCheck = MutableStateFlow<QualityCheck?>(null)
+    internal val qualityCheck = _qualityCheck.asStateFlow()
+
+    internal fun dismissQualityCheck(check: QualityCheck) {
+        _qualityCheck.compareAndSet(check, null)
+    }
 
     internal data class SignalPath(val decoder: String, val codec: String?, val route: DesktopAudioOutput.Route?)
     private val _signalPath = MutableStateFlow<SignalPath?>(null)
@@ -162,6 +174,7 @@ object Player {
         var started = false
         var completed = false
         var mixGain = 1.0
+        var requestedUpgrade = false
     }
 
     private data class MixKey(val generation: Int, val next: Int, val songId: String, val durationMs: Long, val mode: Int)
@@ -358,31 +371,39 @@ object Player {
 
     /** Stops playback in [minutes], the last few turning the volume down; null turns the timer off. */
     fun sleepIn(minutes: Int?): Unit = synchronized(gate) {
-        sleepJob?.cancel()
-        sleepJob = null
-        setFade(1.0)
+        setWindDown(0f)
         if (minutes == null) {
+            sleepJob?.cancel()
+            sleepJob = null
             _sleep.value = null
-            return@synchronized
+        } else {
+            scheduleSleep(Sleep.At(System.currentTimeMillis() + minutes * 60_000L, minutes))
         }
-        val total = minutes * 60_000L
-        val timer = Sleep.At(System.currentTimeMillis() + total, minutes)
+    }
+
+    fun extendSleep() = synchronized(gate) {
+        val timer = _sleep.value as? Sleep.At ?: return@synchronized
+        scheduleSleep(Sleep.At(timer.epochMs + 5 * 60_000L, timer.minutes + 5))
+    }
+
+    private fun scheduleSleep(timer: Sleep.At) {
+        sleepJob?.cancel()
         _sleep.value = timer
         sleepJob = scope.launch {
-            val window = SleepTimer.fadeMsFor(total)
+            val window = SleepTimer.fadeMsFor(timer.minutes * 60_000L)
             while (true) {
                 val nextCheck = synchronized(gate) {
                     if (_sleep.value !== timer) return@launch
                     val left = timer.epochMs - System.currentTimeMillis()
                     if (left <= 0) {
                         setPlayState(false)
-                        setFade(1.0)
+                        setWindDown(0f)
                         _sleep.value = null
                         sleepJob = null
                         return@launch
                     }
                     val windingDown = AppSettings.playback.value.sleepWindDown && left < window
-                    setFade(if (windingDown) SleepTimer.gainAt(1f - left.toFloat() / window).toDouble() else 1.0)
+                    setWindDown(if (windingDown) 1f - left.toFloat() / window else 0f)
                     minOf(left, if (windingDown) 200L else 1_000L)
                 }
                 delay(nextCheck)
@@ -394,7 +415,7 @@ object Player {
     fun sleepAtEndOfSong() = synchronized(gate) {
         sleepJob?.cancel()
         sleepJob = null
-        setFade(1.0)
+        setWindDown(0f)
         _sleep.value = Sleep.EndOfSong
     }
 
@@ -404,12 +425,14 @@ object Player {
         } ?: -1L
         val fadeWindow = 15_000L
         val windingDown = AppSettings.playback.value.sleepWindDown && left in 0 until fadeWindow
-        setFade(if (windingDown) SleepTimer.gainAt(1f - left.toFloat() / fadeWindow).toDouble() else 1.0)
+        setWindDown(if (windingDown) 1f - left.toFloat() / fadeWindow else 0f)
     }
 
-    private fun setFade(f: Double) {
-        if (fade == f) return
-        fade = f
+    private fun setWindDown(fraction: Float) {
+        SleepTimer.setWindDown(fraction)
+        val gain = SleepTimer.gainAt(fraction).toDouble()
+        if (fade == gain) return
+        fade = gain
         applyVolume()
     }
 
@@ -498,7 +521,7 @@ object Player {
         lastSaved = System.nanoTime()
         val d = main ?: return
         if (!d.started || d.completed) return
-        DesktopListeningProgress.save(d.song.videoId, d.engine.positionMs(), d.engine.durationMs())
+        DesktopListeningProgress.save(d.song, d.engine.positionMs(), d.engine.durationMs())
     }
 
     private fun open(i: Int, position: Long? = null, play: Boolean = true, recordPlay: Boolean = true) {
@@ -514,7 +537,7 @@ object Player {
             fail(song)
             return
         }
-        val at = position ?: Podcasts.resumeAt(song.videoId) ?: ResumePoints.resumeAt(song.videoId) ?: 0
+        val at = position ?: Audiobooks.resumeAt(song.videoId) ?: Podcasts.resumeAt(song.videoId) ?: ResumePoints.resumeAt(song.videoId) ?: 0
         val d = makeDeck(song, source, { at }, wanted)
         main = d
         playDeck(d)
@@ -538,6 +561,7 @@ object Player {
         _error.value = null
         _loading.value = true
         _quality.value = null
+        _qualityCheck.value = null
         _signalPath.value = null
         _durationOf.value = song.videoId to 0L
         wanted = true
@@ -593,6 +617,9 @@ object Player {
         return when {
             Radio.isRadio(id) -> Radio.streamUrl(id)?.let { address ->
                 standardSource(address, address, { Quality("Radio", Radio.station(id)?.details ?: "Live") })
+            }
+            Audiobooks.isChapter(id) -> Audiobooks.urlOf(id).let { address ->
+                standardSource(address, address, { Quality("LibriVox", "MP3") })
             }
             LocalMusic.isLocal(id) -> DesktopLocalMusic.fileOf(song)?.let { file ->
                 val quality = { DesktopLocalMusic.qualityOf(file) }
@@ -681,6 +708,9 @@ object Player {
             d.mixGain = old.mixGain
             old.engine.dispose()
             applyVolume()
+            if (d.requestedUpgrade) {
+                _qualityCheck.value = QualityCheck("Switched to ${qualityOf(d).detail}")
+            }
         }
         if (main !== d) return
         sourceReady(d, d.engine.durationMs())
@@ -699,7 +729,7 @@ object Player {
             setPlayState(false)
             if (_sleep.value == Sleep.EndOfSong) {
                 _sleep.value = null
-                setFade(1.0)
+                setWindDown(0f)
             }
         } else {
             advance(automatic = true)
@@ -708,12 +738,16 @@ object Player {
 
     private fun sourceFailed(d: Deck, message: String?) {
         if (main !== d && incoming !== d && cue?.deck !== d && blend?.tail !== d) return
-        System.err.println("Player: ${d.song.videoId}: ${message ?: "audio unavailable"}")
+        val diagnostic = if (d.requestedUpgrade) "audio unavailable" else message ?: "audio unavailable"
+        System.err.println("Player: ${d.song.videoId}: $diagnostic")
         val position = d.engine.positionMs()
         d.engine.dispose()
         if (incoming === d) {
             incoming = null
             upgrades.remove(d.song.videoId)
+            if (d.requestedUpgrade) {
+                _qualityCheck.value = QualityCheck("Couldn't switch streams. The previous source is still selected.")
+            }
         } else if (blend?.tail === d) {
             finishBlend()
         } else if (cue?.deck === d) {
@@ -872,9 +906,46 @@ object Player {
         isYouTubeId(song.videoId) && !Podcasts.isEpisode(song.videoId)
 
     private fun mixable(song: Song): Boolean =
-        !Radio.isRadio(song.videoId) && !Podcasts.isEpisode(song.videoId) && song.durationText?.let(::seconds)?.let { it < 1_200 } != false
+        !Radio.isRadio(song.videoId) && !Podcasts.isEpisode(song.videoId) && !Audiobooks.isChapter(song.videoId) &&
+            song.durationText?.let(::seconds)?.let { it < 1_200 } != false
 
     // ---- Better sources ------------------------------------------------------------
+
+    internal fun requestQualityUpgrade(id: String) = synchronized(gate) {
+        val current = main?.takeIf { it.song.videoId == id && !it.completed } ?: return@synchronized
+        if (!musicTrack(current.song) || _qualityCheck.value?.busy == true) return@synchronized
+        val reason = when {
+            current.source.decoder == Decoder.CAST -> "Quality is controlled by the cast receiver."
+            current.source.quality().source == "Download" -> "This track is playing from a download."
+            _quality.value?.lossless == true -> "This track is already playing lossless audio."
+            !wanted -> "Resume playback to upgrade the stream."
+            !Addons.lossless.value && !Addons.jioSaavn.value -> "Enable a higher-quality source in Settings."
+            else -> null
+        }
+        if (reason != null) {
+            _qualityCheck.value = QualityCheck(reason)
+            return@synchronized
+        }
+
+        val gen = generation
+        val checking = QualityCheck("Looking for a higher-quality stream…", busy = true)
+        _qualityCheck.value = checking
+        upgradeJob?.cancel()
+        incoming?.engine?.dispose()
+        incoming = null
+        upgradeJob = scope.launch {
+            val offered = try {
+                withTimeoutOrNull(45_000) { findUpgrades(current.song, gen, requested = true) } == true
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                false
+            }
+            if (!offered) synchronized(gate) {
+                if (generation == gen) _qualityCheck.compareAndSet(checking, QualityCheck("No higher-quality stream found."))
+            }
+        }
+    }
 
     /** A better source found for a song: what plays it and how it's labelled. */
     private data class Upgrade(val flac: Addons.Flac?, val saavn: String?, val at: Long = System.currentTimeMillis()) {
@@ -903,15 +974,22 @@ object Player {
     }
 
     /** Asks JioSaavn and the add-ons at once; each better answer takes over as it comes. */
-    private suspend fun findUpgrades(song: Song, gen: Int) {
-        if (!musicTrack(song) || (!Addons.lossless.value && !Addons.jioSaavn.value)) return
+    private suspend fun findUpgrades(song: Song, gen: Int, requested: Boolean = false): Boolean {
+        if (!musicTrack(song) || (!Addons.lossless.value && !Addons.jioSaavn.value)) return false
         Addons.syncPublished()
-        val wanted = wantedOf(song) ?: return
-        coroutineScope {
+        val wanted = wantedOf(song) ?: return false
+        return coroutineScope {
             val saavn = async { if (Addons.jioSaavn.value) JioSaavn.find(wanted) else null }
             val flac = async { runCatching { Addons.findFlac(wanted) }.getOrNull() }
+            if (requested) {
+                val best = flac.await()?.let { Upgrade(it, null) } ?: saavn.await()?.let { Upgrade(null, it) }
+                saavn.cancel()
+                currentCoroutineContext().ensureActive()
+                return@coroutineScope best != null && offer(song, gen, best, requested = true)
+            }
             saavn.await()?.let { url -> offer(song, gen, Upgrade(null, url)) }
             flac.await()?.let { found -> offer(song, gen, Upgrade(found, null)) }
+            false
         }
     }
 
@@ -927,17 +1005,23 @@ object Player {
         else runCatching { Streams.resolve(song.videoId, kind = if (Ffmpeg.available) Streams.Kind.OPUS else Streams.Kind.AAC) }
     }
 
-    private fun offer(song: Song, gen: Int, upgrade: Upgrade) = synchronized(gate) {
+    private fun offer(song: Song, gen: Int, upgrade: Upgrade, requested: Boolean = false): Boolean = synchronized(gate) {
         val known = upgrades[song.videoId]
         if (known == null || known.rank <= upgrade.rank) upgrades[song.videoId] = upgrade
-        val old = main ?: return@synchronized
+        val old = main ?: return@synchronized false
         if (gen != generation || upgrade.rank <= rankNow() || old.source.quality().source == "Download" ||
-            blend != null || old.completed || !AppSettings.playback.value.qualityUpgrade) return@synchronized
+            blend != null || old.completed || (!requested && !AppSettings.playback.value.qualityUpgrade)) return@synchronized false
         incoming?.engine?.dispose()
         val better = makeDeck(song, upgradeSource(song, upgrade), { old.engine.positionMs() }, wanted)
         better.mixGain = 0.0
+        better.requestedUpgrade = requested
         incoming = better
         playDeck(better)
+        if (requested) scope.launch {
+            delay(25_000)
+            synchronized(gate) { if (incoming === better) sourceFailed(better, null) }
+        }
+        true
     }
 
     private fun upgradeSource(song: Song, upgrade: Upgrade): Source {

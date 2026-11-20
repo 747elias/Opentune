@@ -119,6 +119,14 @@ object Streams {
     }
 
     private suspend fun variants(videoId: String, fresh: Boolean, preferred: Kind): Map<Kind, List<Stream>> {
+        if (!fresh) {
+            val public = found[videoId]?.takeIf { System.currentTimeMillis() - it.at < KEEP_MS }?.variants.orEmpty()
+            if (public[preferred].orEmpty().isNotEmpty()) return public
+            val active = signedCache(videoId)?.variants.orEmpty()
+            if (active[preferred].orEmpty().isNotEmpty()) {
+                return Kind.entries.associateWith { kind -> active[kind].orEmpty().ifEmpty { public[kind].orEmpty() } }
+            }
+        }
         val guest = try {
             Result.success(publicVariants(videoId, fresh).variants)
         } catch (cancelled: CancellationException) {
@@ -137,8 +145,7 @@ object Streams {
         if (!DesktopAccount.signedIn.value) return@withLock emptyMap()
         val revision = DesktopAccount.revision.value
         val now = System.currentTimeMillis()
-        val current = signed[videoId]?.takeIf { it.revision == revision && now - it.cache.at < KEEP_MS }
-        if (!fresh && current != null) return@withLock current.cache.variants
+        if (!fresh) signedCache(videoId)?.let { return@withLock it.variants }
         signed.entries.removeIf { it.value.revision != revision || now - it.value.cache.at >= KEEP_MS }
         if (signed.size >= 256) signed.clear()
 
@@ -161,6 +168,11 @@ object Streams {
         if (result.values.any { it.isNotEmpty() }) signed[videoId] = AccountStreams(revision, Cached(now, result))
         result.filterValues { it.isNotEmpty() }
     }
+
+    private fun signedCache(videoId: String): Cached? = signed[videoId]?.takeIf {
+        DesktopAccount.signedIn.value && it.revision == DesktopAccount.revision.value &&
+            System.currentTimeMillis() - it.cache.at < KEEP_MS
+    }?.cache
 
     internal fun authorizedFormats(response: JsonObject, headers: Map<String, String>, loudnessDb: Double?): Map<Kind, List<Stream>> {
         val playability = response["playabilityStatus"] as? JsonObject
@@ -218,8 +230,8 @@ object Streams {
 
     /** The stream already found for [videoId], for saying what's playing. */
     fun known(videoId: String, kind: Kind = Kind.AAC, maxKbps: Int = Int.MAX_VALUE): Stream? =
-        signed[videoId]?.takeIf { it.revision == DesktopAccount.revision.value }?.cache?.variants?.get(kind)
-            ?.let { choose(it, maxKbps) } ?: found[videoId]?.variants?.get(kind)?.let { choose(it, maxKbps) }
+        signedCache(videoId)?.variants?.get(kind)?.let { choose(it, maxKbps) }
+            ?: found[videoId]?.variants?.get(kind)?.let { choose(it, maxKbps) }
 
     /** Forgets an address the server refused, so the next try finds a new one. */
     fun forget(videoId: String) {

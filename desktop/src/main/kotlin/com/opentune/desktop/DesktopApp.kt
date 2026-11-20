@@ -414,6 +414,8 @@ private fun Pages(
             opened is ShelfItem && opened.browseId?.startsWith("MPSP") == true -> PodcastShowPage(opened.browseId!!)
             opened is ShelfItem -> CollectionPage(opened)
             opened is PodcastKey -> PodcastShowPage(opened.id)
+            opened is AudiobooksKey -> AudiobooksPage { onOpenAny(AudiobookKey(it)) }
+            opened is AudiobookKey -> AudiobookPage(opened.id)
             opened is PlaylistKey -> PlaylistPage(opened.id, onBack = onBack)
             opened is MoodKey -> MoodPage(opened, onOpen)
             opened is DailyMixes.Mix -> MixPage(opened)
@@ -424,7 +426,7 @@ private fun Pages(
             shown.tab == Tab.SEARCH -> SearchPage(query, onQuery, searches, onSearch, onOpenAny)
             shown.tab == Tab.NEW -> NewPage(onOpen)
             shown.tab == Tab.HOME -> HomePage(onOpen = onOpen, onOpenAny = onOpenAny)
-            shown.tab == Tab.PODCASTS -> PodcastsPage { onOpenAny(PodcastKey(it)) }
+            shown.tab == Tab.PODCASTS -> PodcastsPage({ onOpenAny(PodcastKey(it)) }, { onOpenAny(AudiobooksKey) })
             shown.tab == Tab.RADIO -> RadioPage()
             shown.tab == Tab.ROOMS -> RoomsPage()
             shown.tab == Tab.RECOGNIZE -> RecognizePage()

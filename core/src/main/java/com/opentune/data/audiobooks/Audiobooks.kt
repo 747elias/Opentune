@@ -1,6 +1,5 @@
 package com.opentune.data.audiobooks
 
-import android.net.Uri
 import com.opentune.data.Http
 import com.opentune.data.model.Song
 import kotlinx.coroutines.Dispatchers
@@ -83,7 +82,7 @@ object Audiobooks {
         val rest = chapterId.removePrefix(PREFIX)
         val item = rest.substringBefore('/')
         val file = rest.substringAfter('/')
-        return "$ARCHIVE/download/${Uri.encode(item)}/${file.split('/').joinToString("/") { Uri.encode(it) }}"
+        return "$ARCHIVE/download/".toHttpUrl().newBuilder().addPathSegment(item).addPathSegments(file).build().toString()
     }
 
     /** The most listened-to books, a page at a time. */
@@ -112,7 +111,8 @@ object Audiobooks {
 
     /** A book's details and its chapters, in order. */
     suspend fun book(id: String): BookPage = withContext(Dispatchers.IO) {
-        val root = JSONObject(get("$ARCHIVE/metadata/${Uri.encode(id)}"))
+        val address = "$ARCHIVE/metadata/".toHttpUrl().newBuilder().addPathSegment(id).build()
+        val root = JSONObject(get(address.toString()))
         val meta = root.getJSONObject("metadata")
         val book = Book(id, clean(text(meta, "title")).ifEmpty { id }, cleanAuthor(text(meta, "creator")), text(meta, "runtime").ifEmpty { null })
         BookPage(book, text(meta, "description").ifEmpty { null }?.let(::stripHtml), null, chapters(id, root.getJSONArray("files")))

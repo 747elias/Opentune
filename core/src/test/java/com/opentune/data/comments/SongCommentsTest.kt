@@ -33,6 +33,8 @@ class SongCommentsTest {
         assertTrue(first.text.startsWith("“06 November 2026"))
         assertEquals("429K", first.likes)
         assertEquals("976", first.replies)
+        assertNotNull(first.replyToken)
+        assertTrue(first.replyToken != p.next)
         assertTrue(first.avatarUrl!!.startsWith("https://"))
         assertNotNull(p.next)
         // Not signed in: no comment box.
