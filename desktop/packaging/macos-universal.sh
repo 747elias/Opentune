@@ -73,6 +73,18 @@ done
 plutil -replace CFBundleURLTypes -json '[{"CFBundleURLName":"com.opentune.desktop.links","CFBundleURLSchemes":["opentune"]}]' "$contents/Info.plist"
 plutil -replace CFBundleDocumentTypes -json '[{"CFBundleTypeName":"Audio File","CFBundleTypeRole":"Viewer","LSHandlerRank":"Alternate","LSItemContentTypes":["public.audio"]}]' "$contents/Info.plist"
 
+# Finder reads the outer bundle. AWT reads the plist of the executing jpackage app.
+for payload in "$arm_payload" "$intel_payload"; do
+    plist="$payload/Contents/Info.plist"
+    for key in Java Java.EAWTOverride; do
+        if ! plutil -extract "$key" xml1 -o /dev/null "$plist" 2>/dev/null; then
+            plutil -insert "$key" -json '{}' "$plist"
+        fi
+    done
+    plutil -replace Java.EAWTOverride.DocumentHandler -bool true "$plist"
+    plutil -replace Java.EAWTOverride.URLHandler -bool true "$plist"
+done
+
 xcrun clang -arch arm64 -arch x86_64 -mmacosx-version-min=11.0 \
     -std=c11 -D_DARWIN_C_SOURCE -O2 -Wall -Wextra -Werror \
     "$scripts/macos-launcher.c" -o "$contents/MacOS/OpenTune"
