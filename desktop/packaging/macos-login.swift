@@ -316,7 +316,7 @@ private func installMenu(on app: NSApplication) {
 }
 
 let app = NSApplication.shared
-let controller = LoginWindow()
+private let controller = LoginWindow()
 app.setActivationPolicy(.regular)
 installMenu(on: app)
 app.delegate = controller
