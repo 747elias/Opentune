@@ -30,12 +30,13 @@ internal interface Engine {
     fun setNormalizationDb(db: Double) {}
     fun setRateFactor(factor: Float) {}
     fun setBassCut(frequencyHz: Float) {}
+    fun audioRoute(): DesktopAudioOutput.Route? = null
     fun dispose()
 }
 
 /** Where decoded samples go: the sound card, or in tests a stand-in. */
 internal interface PcmOut {
-    /** Opens for [format], or for 16-bit at the same rate when the card won't take more; the format it opened. */
+    /** Opens the requested or a compatible format at the same rate, then reports the actual format. */
     fun open(format: AudioFormat): AudioFormat
     /** Blocks until written, or returns early when stopped or flushed. */
     fun write(bytes: ByteArray, off: Int, len: Int): Int
@@ -46,25 +47,44 @@ internal interface PcmOut {
     fun close()
     /** Frames played since it opened. */
     val framePosition: Long
+    val route: DesktopAudioOutput.Route? get() = null
     /** Sets the line's own gain; false when it has none, and the samples are scaled instead. */
     fun setGainDb(db: Float): Boolean
 }
 
-/** The computer's default output, through Java Sound, at the song's own rate and depth when it takes them. */
+/** The chosen or default output, through Java Sound, at the song's own rate and depth when accepted. */
 internal class SoundCard(private val bufferMs: Int = 500) : PcmOut {
-    private var line: SourceDataLine? = null
+    @Volatile private var line: SourceDataLine? = null
+    @Volatile override var route: DesktopAudioOutput.Route? = null
+        private set
 
     override fun open(format: AudioFormat): AudioFormat {
-        val tries = listOf(format, AudioFormat(format.sampleRate, 16, format.channels, true, false)).distinct()
+        val tries = buildList {
+            add(format)
+            if (format.encoding == AudioFormat.Encoding.PCM_FLOAT) {
+                add(AudioFormat(format.sampleRate, 24, format.channels, true, false))
+            }
+            add(AudioFormat(format.sampleRate, 16, format.channels, true, false))
+        }.distinct()
         var last: Exception? = null
-        for (f in tries) {
-            try {
-                val l = AudioSystem.getLine(DataLine.Info(SourceDataLine::class.java, f)) as SourceDataLine
-                l.open(f, (f.frameRate * bufferMs / 1000).toInt() * f.frameSize)
-                line = l
-                return f
-            } catch (e: Exception) {
-                last = e
+        val preferred = DesktopAudioOutput.selected.value?.let { selected ->
+            DesktopAudioOutput.devices().firstOrNull { it.id == selected }
+        }
+        for (device in listOfNotNull(preferred) + listOf(null)) {
+            for (f in tries) {
+                var candidate: SourceDataLine? = null
+                try {
+                    val info = DataLine.Info(SourceDataLine::class.java, f)
+                    candidate = (if (device != null) AudioSystem.getMixer(device.info).getLine(info) else AudioSystem.getLine(info)) as SourceDataLine
+                    candidate.open(f, (f.frameRate * bufferMs / 1000).toInt() * f.frameSize)
+                    val actual = candidate.format
+                    route = DesktopAudioOutput.Route(device?.name, actual)
+                    line = candidate
+                    return actual
+                } catch (e: Exception) {
+                    runCatching { candidate?.close() }
+                    last = e
+                }
             }
         }
         throw IOException("The sound card won't play ${format.sampleRate.toInt()} Hz: ${last?.message}")
@@ -360,6 +380,7 @@ internal class FlacEngine(
     }
 
     override fun durationMs(): Long = info?.let { it.totalSamples * 1000 / it.sampleRate } ?: 0
+    override fun audioRoute(): DesktopAudioOutput.Route? = out.route
 
     override fun setVolume(v: Double) {
         volume = v.coerceIn(0.0, 1.0)

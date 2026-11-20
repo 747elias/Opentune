@@ -48,7 +48,6 @@ object NewReleases {
     private const val TAG = "NewReleases"
     private const val WORK = "new-releases"
     private const val CHANNEL = "new-releases"
-    private const val MAX_KNOWN = 300
 
     @Serializable
     data class Followed(
@@ -108,12 +107,7 @@ object NewReleases {
     }
 
     /** Albums, singles and EPs on an artist's page, newest first as YouTube lists them. */
-    internal fun releasesOf(page: ArtistPage): List<ShelfItem> =
-        page.sections
-            .filter { s -> RELEASE_SHELF.containsMatchIn(s.title) }
-            .flatMap { it.items }
-            .filter { it.browseId?.startsWith("MPRE") == true }
-            .distinctBy { it.browseId }
+    internal fun releasesOf(page: ArtistPage): List<ShelfItem> = ArtistReleaseRules.releasesOf(page)
 
     /** Reads every followed artist's page; the releases not seen before. Updates what's been seen. */
     suspend fun check(): List<Release> = lock.withLock {
@@ -142,12 +136,8 @@ object NewReleases {
      * set. An artist with nothing seen yet (followed before the page loaded)
      * takes everything as seen, announcing nothing.
      */
-    internal fun diff(artist: Followed, current: List<ShelfItem>): Pair<List<ShelfItem>, Set<String>> {
-        val ids = current.mapNotNull { it.browseId }
-        val fresh = if (artist.known.isEmpty()) emptyList() else current.filter { it.browseId !in artist.known }
-        val known = (ids + artist.known).distinct().take(MAX_KNOWN).toSet()
-        return fresh to known
-    }
+    internal fun diff(artist: Followed, current: List<ShelfItem>): Pair<List<ShelfItem>, Set<String>> =
+        ArtistReleaseRules.diff(artist.known, current)
 
     /** Runs the twice-daily check while anyone is followed and alerts are on. */
     fun schedule(context: Context) {
@@ -213,7 +203,6 @@ object NewReleases {
         }
     }
 
-    private val RELEASE_SHELF = Regex("album|single|ep\\b", RegexOption.IGNORE_CASE)
     private const val MAX_NOTIFICATIONS = 8
 
     class Worker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {

@@ -106,7 +106,7 @@ internal object DesktopAccount {
                         liked = likedSongs.getOrDefault(_library.value.liked),
                         playlists = savedPlaylists.getOrDefault(_library.value.playlists),
                         problem = when {
-                            failures.any { it is ExpiredSession } -> "Sign in again from your phone to refresh this account."
+                            failures.any { it is ExpiredSession } -> "Sign in again to refresh this account."
                             failures.isNotEmpty() -> "Couldn't refresh your YouTube Music library. Try again."
                             else -> null
                         },
@@ -120,8 +120,24 @@ internal object DesktopAccount {
 
     /** Hearts work locally as a guest and on songs outside YouTube Music. */
     fun setLiked(song: Song, liked: Boolean) {
+        val rating = if (liked) LikeStatus.LIKE else LikeStatus.INDIFFERENT
+        rate(song, rating)
+    }
+
+    fun setDisliked(song: Song, disliked: Boolean) {
+        val saved = if (disliked) DesktopHidden.markDisliked(song) else DesktopHidden.clearDislike(song.videoId)
+        if (!saved) {
+            _notice.value = "Couldn't save the dislike"
+            return
+        }
+        rate(song, if (disliked) LikeStatus.DISLIKE else LikeStatus.INDIFFERENT)
+    }
+
+    private fun rate(song: Song, rating: LikeStatus) {
+        val liked = rating == LikeStatus.LIKE
         if (!signedIn.value || !isYouTubeId(song.videoId)) {
             Library.setLiked(song, liked)
+            if (liked) DesktopHidden.clearDislike(song.videoId)
             return
         }
         val revision = revision.value
@@ -129,12 +145,13 @@ internal object DesktopAccount {
             request {
                 writes.withLock {
                     check(signedIn.value && revision == DesktopAccount.revision.value)
-                    Innertube.rate(song.videoId, if (liked) LikeStatus.LIKE else LikeStatus.INDIFFERENT)
+                    Innertube.rate(song.videoId, rating)
                     if (!liked && Library.isLiked(song.videoId)) Library.setLiked(song, false)
+                    if (liked) DesktopHidden.clearDislike(song.videoId)
                     val songs = _library.value.liked.filterNot { it.videoId == song.videoId }
                     _library.value = _library.value.copy(liked = if (liked) listOf(song) + songs else songs)
                 }
-            }.onFailure { _notice.value = "Couldn't change the like on YouTube Music. Try again." }
+            }.onFailure { _notice.value = "Couldn't change the rating on YouTube Music. Try again." }
         }
     }
 

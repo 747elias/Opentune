@@ -140,7 +140,7 @@ internal object DesktopCast {
             Subsonic.isSubsonic(id) -> CastServer.Source.Web("audio/mpeg") {
                 requireNotNull(Subsonic.streamUrl(id)).replace("format=raw", "format=mp3&maxBitRate=320") to emptyMap()
             }
-            isYouTubeId(id) -> CastServer.Source.Web("audio/mp4") { fresh -> Streams.resolve(id, fresh).url to emptyMap() }
+            isYouTubeId(id) -> CastServer.Source.Web("audio/mp4") { fresh -> Streams.resolve(id, fresh).let { it.url to it.headers } }
             else -> error("This song cannot be cast.")
         }
         CastMedia(id, CastServer.publish(source, connection.address), source.contentType, song.title, song.artist,

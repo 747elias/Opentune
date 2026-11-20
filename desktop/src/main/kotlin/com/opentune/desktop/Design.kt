@@ -278,6 +278,7 @@ internal fun TrackRow(i: Int, song: Song, songs: List<Song>, onRemove: ((Song) -
                 AddToPlaylistMenu(song, adding) { adding = false }
             }
             LikeButton(isLiked, { DesktopAccount.setLiked(song, !isLiked) }, size = 20.dp)
+            SuggestionActions(song)
         }
         Text(song.durationText.orEmpty(), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.width(52.dp).padding(start = 10.dp))
         if (onRemove != null) {

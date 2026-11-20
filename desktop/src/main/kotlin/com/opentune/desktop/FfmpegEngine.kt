@@ -1,7 +1,9 @@
 package com.opentune.desktop
 
 import com.opentune.data.settings.AppSettings
+import java.nio.FloatBuffer
 import java.nio.ShortBuffer
+import java.util.concurrent.ThreadLocalRandom
 import javax.sound.sampled.AudioFormat
 import kotlin.math.PI
 import kotlin.math.abs
@@ -50,6 +52,7 @@ internal class FfmpegEngine(
     private val out: PcmOut = SoundCard(),
     startImmediately: Boolean = true,
     private val headers: Map<String, String> = emptyMap(),
+    internal val floatOutput: Boolean = false,
 ) : Engine {
     private val lock = Object()
     @Volatile private var disposed = false
@@ -59,9 +62,9 @@ internal class FfmpegEngine(
     @Volatile private var started = false
     @Volatile private var rate = 0
     @Volatile private var duration = 0L
-    /** Where the current run started, in frames, and the line's position then. */
-    @Volatile private var runStart = 0L
-    @Volatile private var lineBase = 0L
+    private val timeline = PcmTimeline()
+    @Volatile var codec: String? = null
+        private set
     @Volatile private var volume = 1.0
     @Volatile private var softGain = 1.0
     @Volatile private var normalization = 1.0
@@ -84,7 +87,7 @@ internal class FfmpegEngine(
         try {
             if (!Ffmpeg.available) throw IllegalStateException("FFmpeg isn't available")
             val g = FFmpegFrameGrabber(address).also { grabber = it }
-            g.sampleMode = FrameGrabber.SampleMode.SHORT
+            g.sampleMode = if (floatOutput) FrameGrabber.SampleMode.FLOAT else FrameGrabber.SampleMode.SHORT
             g.audioChannels = 2
             g.setOption("reconnect", "1")
             g.setOption("reconnect_streamed", "1")
@@ -96,8 +99,16 @@ internal class FfmpegEngine(
             g.start()
             rate = g.sampleRate.takeIf { it > 0 } ?: 48_000
             duration = (g.lengthInTime / 1000).coerceAtLeast(0)
-            val opened = out.open(AudioFormat(rate.toFloat(), 16, 2, true, false))
-            if (opened.sampleSizeInBits != 16) throw IllegalStateException("the sound card won't take 16-bit")
+            codec = g.audioCodecName?.takeIf { it.isNotBlank() }
+            val format = if (floatOutput) AudioFormat(AudioFormat.Encoding.PCM_FLOAT, rate.toFloat(), 32, 2, 8, rate.toFloat(), false)
+                else AudioFormat(rate.toFloat(), 16, 2, true, false)
+            val opened = out.open(format)
+            val bits = opened.sampleSizeInBits
+            val frameSize = bits / 8 * 2
+            val writeFloat = opened.encoding == AudioFormat.Encoding.PCM_FLOAT && bits == 32
+            val writeInteger = opened.encoding == AudioFormat.Encoding.PCM_SIGNED && (bits == 16 || bits == 24)
+            check((writeFloat || writeInteger) && opened.frameSize == frameSize && !opened.isBigEndian) { "Unsupported sound card format" }
+            val fullScale = if (writeInteger) 1 shl (bits - 1) else 0
             applyVolume()
             if (!paused) out.start()
             filter = effects(rate)
@@ -105,18 +116,19 @@ internal class FfmpegEngine(
                 ?.let { if (duration > 0) it.coerceAtMost(duration) else it }
             if (first != null) seekTo(g, first)
             onReady(duration)
-            var at = msToFrame(first ?: 0)
+            var sourceFrame = msToFrame(first ?: 0).toDouble()
+            var writtenFrame = out.framePosition
+            var silentFrames = 0
+            timeline.reset(writtenFrame, sourceFrame, speed)
             val space = com.opentune.playback.dsp.Space3D(rate)
             val stereo = FloatArray(2)
-            var emitting = false
             var bytes = ByteArray(0)
             val low = DoubleArray(2)
+            val noise = ThreadLocalRandom.current()
             while (!disposed) {
                 if (effectsChanged) {
                     effectsChanged = false
                     filter?.let { f -> runCatching { f.stop(); f.release() } }
-                    runStart = msToFrame(positionMs())
-                    lineBase = out.framePosition
                     filter = effects(rate)
                 }
                 seekRequest?.let { request ->
@@ -125,52 +137,67 @@ internal class FfmpegEngine(
                     out.flush()
                     seekTo(g, target)
                     filter?.let { f -> runCatching { f.stop(); f.release() }; filter = effects(rate) }
-                    at = msToFrame(target)
-                    emitting = false
+                    sourceFrame = msToFrame(target).toDouble()
+                    writtenFrame = out.framePosition
+                    timeline.reset(writtenFrame, sourceFrame, speed)
+                    silentFrames = 0
+                    low.fill(0.0)
+                    seekingTo = null
                 }
                 val frame: Frame = g.grabSamples() ?: break
-                val pieces = filter?.let { f -> f.push(frame); generateSequence { f.pullSamples() }.toList() } ?: listOf(frame)
+                val pieces = filter?.let { f -> f.push(frame); generateSequence { f.pullSamples() } } ?: sequenceOf(frame)
                 for (piece in pieces) {
-                    val samples = piece.samples?.firstOrNull() as? ShortBuffer ?: continue
-                    val count = samples.remaining()
-                    if (count == 0) continue
-                    if (!emitting) {
-                        emitting = true
-                        out.flush()
-                        runStart = at
-                        lineBase = out.framePosition
-                        seekingTo = null
-                    }
-                    if (bytes.size < count * 2) bytes = ByteArray(count * 2)
+                    val samples = piece.samples?.firstOrNull() ?: continue
+                    val shorts = samples as? ShortBuffer
+                    val floats = samples as? FloatBuffer
+                    if (shorts == null && floats == null) continue
+                    val frames = samples.remaining() / 2
+                    if (bytes.size < frames * frameSize) bytes = ByteArray(frames * frameSize)
                     val volume = softGain
                     val gain = normalization
                     val orbit = AppSettings.sound.value.space.periodSeconds
+                    val skip = duration > 0 && AppSettings.playback.value.skipSilence
+                    val silenceLimit = (rate / speed).roundToInt()
                     val alpha = 1 - exp(-2 * PI * bassCut / rate)
                     if (alpha == 0.0) low.fill(0.0)
-                    for (i in 0 until count) {
-                        val channel = i % 2
-                        val raw = if (orbit > 0 && count % 2 == 0) {
-                            if (channel == 0) {
-                                stereo[0] = samples.get(samples.position() + i) / 32768f
-                                stereo[1] = samples.get(samples.position() + i + 1) / 32768f
-                                space.process(stereo, orbit)
+                    var bytesUsed = 0
+                    var discontinuity = true
+                    for (i in 0 until frames) {
+                        val offset = samples.position() + i * 2
+                        stereo[0] = floats?.get(offset) ?: shorts!!.get(offset) / 32768f
+                        stereo[1] = floats?.get(offset + 1) ?: shorts!!.get(offset + 1) / 32768f
+                        if (skip && abs(stereo[0]) < 0.001f && abs(stereo[1]) < 0.001f) {
+                            silentFrames = (silentFrames + 1).coerceAtMost(silenceLimit + 1)
+                            if (silentFrames > silenceLimit) {
+                                discontinuity = true
+                                continue
                             }
-                            (stereo[channel] * 32768).roundToInt().coerceIn(-32768, 32767)
-                        } else samples.get(samples.position() + i).toInt()
-                        val s = if (alpha == 0.0 && gain == 1.0 && volume == 1.0) raw else {
-                            low[channel] += alpha * (raw - low[channel])
-                            val scaled = (raw - low[channel]) * gain / 32768.0
+                        } else silentFrames = 0
+                        if (discontinuity) {
+                            timeline.append(writtenFrame + bytesUsed / frameSize, sourceFrame + i * speed, speed)
+                            discontinuity = false
+                        }
+                        if (orbit > 0) space.process(stereo, orbit)
+                        for (channel in stereo.indices) {
+                            val raw = stereo[channel]
+                            if (alpha != 0.0) low[channel] += alpha * (raw - low[channel])
+                            val scaled = (raw - low[channel]) * gain
                             // Keep boosts linear below the limiter's knee, with room for transients.
                             val limited = if (gain > 1.0 && abs(scaled) > 0.90)
                                 Math.copySign(0.90 + 0.10 * tanh((abs(scaled) - 0.90) / 0.10), scaled)
                             else scaled
-                            (limited * 32768 * volume).roundToInt().coerceIn(-32768, 32767)
+                            val audible = (limited * volume).coerceIn(-1.0, 1.0)
+                            val word = if (writeFloat) audible.toFloat().toRawBits() else {
+                                val dither = if (floats != null && audible != 0.0) noise.nextDouble() - noise.nextDouble() else 0.0
+                                (audible * fullScale + dither).roundToInt().coerceIn(-fullScale, fullScale - 1)
+                            }
+                            for (shift in 0 until bits step 8) bytes[bytesUsed++] = (word ushr shift).toByte()
                         }
-                        bytes[i * 2] = s.toByte()
-                        bytes[i * 2 + 1] = (s shr 8).toByte()
                     }
-                    at += (count / 2 * speed).toLong()
-                    if (!write(bytes, count * 2)) break
+                    sourceFrame += frames * speed
+                    if (bytesUsed == 0) continue
+                    if (!write(bytes, bytesUsed)) break
+                    writtenFrame += bytesUsed / frameSize
                     if (!started) {
                         started = true
                         onStarted()
@@ -204,8 +231,9 @@ internal class FfmpegEngine(
         val chain = filterChain(requested, AppSettings.equalizer.value, rate, AppSettings.sound.value, AppSettings.playback.value)
         speed = requested.toDouble()
         if (chain == null) return null
-        return FFmpegFrameFilter(chain, 2).apply {
-            sampleFormat = avutil.AV_SAMPLE_FMT_S16
+        val layout = if (floatOutput) "flt" else "s16"
+        return FFmpegFrameFilter("$chain,aformat=sample_fmts=$layout:channel_layouts=stereo", 2).apply {
+            sampleFormat = if (floatOutput) avutil.AV_SAMPLE_FMT_FLT else avutil.AV_SAMPLE_FMT_S16
             sampleRate = rate
             start()
         }
@@ -254,11 +282,12 @@ internal class FfmpegEngine(
     override fun positionMs(): Long {
         seekingTo?.let { return it }
         if (rate == 0 || !started) return startAtMs()
-        val frames = runStart + ((out.framePosition - lineBase) * speed).toLong()
-        return frames * 1000 / rate
+        val position = (timeline.sourceFrame(out.framePosition) * 1000 / rate).toLong().coerceAtLeast(0)
+        return if (duration > 0) position.coerceAtMost(duration) else position
     }
 
     override fun durationMs(): Long = duration
+    override fun audioRoute(): DesktopAudioOutput.Route? = out.route
 
     /** The equalizer or speed changed in Settings: the song carries on with the new ones. */
     fun refreshEffects() {

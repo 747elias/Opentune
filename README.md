@@ -416,11 +416,14 @@ Download `OpenTune-<version>-macos-universal.dmg` from GitHub Releases, open
 it and drag OpenTune into Applications. The app includes its Java runtime
 for both processor types.
 
-To connect YouTube Music, open **Settings → Accounts → YouTube Music** on
-the Mac. Sign in to OpenTune on Android, then open **Settings → Link a
-device** on the phone and scan the Mac's QR code. Keep the devices on the
-same network. On the Mac, **Library → YouTube Music** shows the account's
-playlists and likes. Login credentials stay on the paired devices.
+To connect YouTube Music, open **Settings → Accounts → YouTube Music** and
+select **Sign in on this Mac**. Complete sign-in on Google's page in the
+OpenTune sign-in window. **Library → YouTube Music** shows the connected
+account's playlists and likes.
+
+If Google declines sign-in in that window, select **Sign in with Android**.
+Sign in to OpenTune on your phone, open **Settings → Link a device** and scan
+the Mac's QR code with both devices on the same network.
 
 The **macOS Tahoe** workflow builds and tests the same DMG on both processor
 types. Its `macos-universal` artifact contains the DMG for a preview build.

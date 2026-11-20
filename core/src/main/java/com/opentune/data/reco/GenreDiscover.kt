@@ -5,6 +5,7 @@ import com.opentune.data.history.MixSnapshots
 import com.opentune.data.history.Wrapped
 import com.opentune.data.library.HiddenList
 import com.opentune.data.model.Song
+import com.opentune.data.roundRobin
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.sync.Mutex
@@ -82,7 +83,7 @@ object GenreDiscover {
         val known = knownArtists.mapTo(HashSet()) { it.lowercase() }
         val perArtist = HashMap<String, Int>()
         val sameNew = mutableListOf<Song>(); val sameKnown = mutableListOf<Song>(); val unknown = mutableListOf<Song>()
-        com.opentune.data.ExploreFeed.weave(radios).distinctBy { it.videoId }.forEach { s ->
+        roundRobin(radios).distinctBy { it.videoId }.forEach { s ->
             if (s.videoId in played || hidden.hides(s.videoId, s.artist)) return@forEach
             val artist = Wrapped.mainArtist(s.artist)
             if (artist.isBlank()) return@forEach

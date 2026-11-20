@@ -148,10 +148,18 @@ import coil3.request.ImageRequest
 import coil3.request.crossfade
 import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import com.opentune.data.model.ShelfItem
+import com.opentune.data.ContentFilter
 import com.opentune.data.history.DailyMixes
+import com.opentune.data.innertube.Innertube
+import com.opentune.data.innertube.InnertubeParser
+import com.opentune.data.model.BrowseType
+import com.opentune.data.model.SearchFilter
+import com.opentune.data.model.SearchResult
 import com.opentune.data.model.Song
 import com.opentune.data.settings.AppSettings
 import com.opentune.data.subsonic.Subsonic
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.delay
 import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.FastOutLinearInEasing
 import androidx.compose.ui.input.nestedscroll.nestedScroll
@@ -216,6 +224,24 @@ internal fun DesktopApp(startPanel: SidePanel? = null, startTab: Tab = Tab.HOME)
     val back: () -> Unit = { history.removeLastOrNull()?.let { page = it } }
     LaunchedEffect(Unit) { DesktopLinks.openRequests.collect { openLink = true } }
     LaunchedEffect(Unit) { DesktopRooms.notices.collect { notices.showSnackbar(it) } }
+    LaunchedEffect(Unit) {
+        hiddenMusicNotices.collect { notice ->
+            val action = notice.undo?.let { com.opentune.i18n.Tr.t("Undo") }
+            if (notices.showSnackbar(notice.message, actionLabel = action, duration = androidx.compose.material3.SnackbarDuration.Long) == androidx.compose.material3.SnackbarResult.ActionPerformed) {
+                notice.undo?.invoke()
+            }
+        }
+    }
+    LaunchedEffect(Unit) { DesktopArtistReleases.openings.collect { go(Page(Tab.NEW, opened = it)) } }
+    val releaseNotice by DesktopArtistReleases.latest.collectAsState()
+    LaunchedEffect(releaseNotice) {
+        val release = releaseNotice ?: return@LaunchedEffect
+        val message = com.opentune.i18n.Tr.f("New from {0}", release.artistName) + " · " + release.item.title
+        if (notices.showSnackbar(message, actionLabel = com.opentune.i18n.Tr.t("Open"), duration = androidx.compose.material3.SnackbarDuration.Long) == androidx.compose.material3.SnackbarResult.ActionPerformed) {
+            go(Page(Tab.NEW, opened = release.item))
+        }
+        DesktopArtistReleases.clearLatest(release)
+    }
     LaunchedEffect(Unit) {
         DesktopLinks.links.collect { link ->
             when (link) {
@@ -392,6 +418,7 @@ private fun Pages(
             opened is MoodKey -> MoodPage(opened, onOpen)
             opened is DailyMixes.Mix -> MixPage(opened)
             opened is AccountLibraryKey -> AccountLibraryPage(onOpenAny, { onOpenAny(Tab.SETTINGS) })
+            opened is SpotifyLibraryKey -> SpotifyLibraryPage { onOpenAny(Tab.SETTINGS) }
             opened is AccountPlaylistKey -> AccountPlaylistPage(opened, onBack)
             opened is SmartPlaylistKey -> SmartPlaylistPage(opened.id, onBack, onPlaylist)
             shown.tab == Tab.SEARCH -> SearchPage(query, onQuery, searches, onSearch, onOpenAny)
@@ -435,31 +462,62 @@ private const val MATERIAL_PAGE_ALPHA = 0.45f
  */
 @Composable
 internal fun SearchPage(query: String, onQuery: (String) -> Unit, searches: Int, onSearch: () -> Unit, onOpenAny: (Any) -> Unit) {
-    var results by remember { mutableStateOf<List<Song>?>(null) }
-    var searching by remember { mutableStateOf(false) }
-    var failed by remember { mutableStateOf(false) }
-    var shownFor by remember { mutableStateOf("") }
+    var request by remember { mutableStateOf<Pair<String, Int>?>(null) }
+    val submitted = request?.first
+    var filter by remember { mutableStateOf(SearchFilter.ALL) }
+    val library by AppSettings.library.collectAsState()
+    var results by remember(request, filter, library.hideExplicit) { mutableStateOf<InnertubeParser.SearchPage?>(null) }
+    var failed by remember(request, filter, library.hideExplicit) { mutableStateOf(false) }
+    var moreFailed by remember(request, filter, library.hideExplicit) { mutableStateOf(false) }
+    var loadingMore by remember(request, filter, library.hideExplicit) { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
     val recentSearches by AppSettings.recentSearches.collectAsState()
     val moods by produceState(emptyList<com.opentune.data.model.MoodGenre>()) { value = runCatching { Pages.moods() }.getOrDefault(emptyList()) }
     LaunchedEffect(searches) {
+        if (searches == 0) return@LaunchedEffect
         val q = query.trim().takeIf { it.isNotEmpty() } ?: return@LaunchedEffect
         AppSettings.addRecentSearch(q)
-        searching = true
-        failed = false
-        runCatching { Pages.search(q) }.onSuccess { results = it; shownFor = q }.onFailure { failed = true }
-        searching = false
+        request = q to searches
     }
-    // Cleared: back to browsing.
-    LaunchedEffect(query) { if (query.isBlank()) { results = null; shownFor = "" } }
+    LaunchedEffect(query.isBlank()) { if (query.isBlank()) { request = null; filter = SearchFilter.ALL } }
+    LaunchedEffect(request, filter, library.hideExplicit) {
+        val q = submitted ?: return@LaunchedEffect
+        try {
+            results = searchPage(Innertube.search(q, filter.params), filter, library.hideExplicit)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            failed = true
+        }
+    }
+    val typing = query.trim().takeIf { it.length >= 2 && it != submitted }
+    var liveRows by remember(typing) { mutableStateOf(emptyList<SearchResult>()) }
+    LaunchedEffect(typing, library.hideExplicit) {
+        val q = typing ?: return@LaunchedEffect
+        delay(350)
+        try {
+            liveRows = searchPage(Innertube.searchTypeahead(q), SearchFilter.ALL, library.hideExplicit).rows.take(8)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            // Search with Enter remains available when typeahead is offline.
+        }
+    }
     val focus = remember { androidx.compose.ui.focus.FocusRequester() }
     LaunchedEffect(Unit) { runCatching { focus.requestFocus() } }
     val found = results
     ScrollPage("Search", spacing = 22.dp) {
         item(key = "field") { SearchField(query, onQuery, onSearch, focus) }
+        if (submitted != null && typing == null) item(key = "filters") {
+            LazyRow(contentPadding = PaddingValues(horizontal = GUTTER), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(SearchFilter.entries, key = { it.name }) { choice ->
+                    FilterChip(selected = choice == filter, onClick = { filter = choice }, label = { Text(choice.label) })
+                }
+            }
+        }
         when {
-            searching -> item(key = "loading") { Loading() }
-            failed -> item(key = "failed") { Message("Couldn't search", "Check your connection and try again.") }
-            found == null -> {
+            typing != null -> if (liveRows.isNotEmpty()) searchRows(liveRows, false, onOpenAny)
+            submitted == null -> {
                 if (recentSearches.isNotEmpty()) item(key = "recent") { RecentSearches(recentSearches) { onQuery(it); onSearch() } }
                 if (moods.isNotEmpty()) item(key = "browse") {
                     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -469,16 +527,78 @@ internal fun SearchPage(query: String, onQuery: (String) -> Unit, searches: Int,
                 }
                 if (recentSearches.isEmpty() && moods.isEmpty()) item(key = "hint") { Message("Find something to play", "Type a song or an artist and press Enter.", icon = Icons.Rounded.Search) }
             }
-            found.isEmpty() -> item(key = "none") { Message("No results for “$shownFor”", "Try different words.", icon = Icons.Rounded.SearchOff) }
+            failed -> item(key = "failed") { Message("Couldn't search", "Check your connection and try again.", action = "Try again" to onSearch) }
+            found == null -> item(key = "loading") { Loading() }
             else -> {
-                item(key = "top") { TopResult(found) }
-                item(key = "all-head") {
-                    Text("Songs", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = GUTTER, vertical = 4.dp))
+                if (found.rows.isEmpty()) item(key = "none") {
+                    Message("No results for “$submitted”", "Try different words.", icon = Icons.Rounded.SearchOff)
                 }
-                tracks(found)
+                searchRows(found.rows, filter == SearchFilter.ALL, onOpenAny, videos = filter == SearchFilter.VIDEOS)
+                found.continuation?.let { token ->
+                    item(key = "more") {
+                        TextButton(modifier = Modifier.padding(horizontal = GUTTER), enabled = !loadingMore, onClick = {
+                            loadingMore = true
+                            moreFailed = false
+                            scope.launch {
+                                try {
+                                    val next = searchPage(Innertube.searchContinuation(token), filter, library.hideExplicit)
+                                    if (results === found) results = InnertubeParser.SearchPage(
+                                        (found.rows + next.rows).distinctBy(::searchRowId), next.continuation.takeUnless { it == token },
+                                    )
+                                } catch (cancelled: CancellationException) {
+                                    throw cancelled
+                                } catch (_: Exception) {
+                                    moreFailed = true
+                                } finally {
+                                    loadingMore = false
+                                }
+                            }
+                        }) {
+                            Text(when {
+                                loadingMore -> "Loading more…"
+                                moreFailed -> "Try again"
+                                else -> "Load more"
+                            })
+                        }
+                    }
+                }
             }
         }
     }
+}
+
+private fun searchPage(response: kotlinx.serialization.json.JsonObject, filter: SearchFilter, hideExplicit: Boolean): InnertubeParser.SearchPage {
+    val page = InnertubeParser.parseSearchPage(response, includeVideos = filter == SearchFilter.VIDEOS)
+    return page.copy(rows = ContentFilter.results(page.rows, hideExplicit))
+}
+
+private fun searchRowId(row: SearchResult): String = when (row) {
+    is SearchResult.TopTrack -> "v:${row.song.videoId}"
+    is SearchResult.Track -> "v:${row.song.videoId}"
+    is SearchResult.Browse -> "b:${row.item.browseId}"
+}
+
+private fun androidx.compose.foundation.lazy.LazyListScope.searchRows(
+    rows: List<SearchResult>, promoted: Boolean, onOpen: (Any) -> Unit, videos: Boolean = false,
+) {
+    val songs = Pages.songsIn(rows)
+    if (promoted && rows.firstOrNull() is SearchResult.TopTrack && songs.isNotEmpty()) item(key = "top") { TopResult(songs) }
+    val grouped = rows.filterIsInstance<SearchResult.Browse>().map { it.item }.groupBy { it.type }
+    grouped.forEach { (type, items) ->
+        val title = when (type) {
+            BrowseType.ALBUM -> "Albums"
+            BrowseType.ARTIST -> "Artists"
+            BrowseType.PLAYLIST -> "Playlists"
+            BrowseType.OTHER -> "More results"
+        }
+        val cards = items.map { ShelfItem(it.title, it.subtitle, it.thumbnailUrl, null, it.browseId, it.explicit) }
+        item(key = "browse-${type.name}") { ShelfRow(Pages.Shelf(title, cards)) { onOpen(it) } }
+    }
+    if (songs.isNotEmpty()) item(key = "all-head") {
+        Text(if (videos) "Videos" else "Songs", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold,
+            modifier = Modifier.padding(horizontal = GUTTER, vertical = 4.dp))
+    }
+    tracks(songs)
 }
 
 /** The search box: wide, rounded and frosted, with a clear button once there's something in it. */
@@ -753,6 +873,7 @@ internal fun SongList(songs: List<Song>, current: Int = -1, onRemove: ((Song) ->
                     AddToPlaylistMenu(song, adding) { adding = false }
                 }
                 LikeButton(isLiked, { DesktopAccount.setLiked(song, !isLiked) }, size = 24.dp)
+                SuggestionActions(song)
                 if (onRemove != null) {
                     IconButton(onClick = { onRemove(song) }) {
                         Icon(Icons.Rounded.Close, "Remove", tint = MaterialTheme.colorScheme.onSurfaceVariant)

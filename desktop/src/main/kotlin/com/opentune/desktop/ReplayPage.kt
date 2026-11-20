@@ -38,8 +38,10 @@ private enum class ReplayPeriod(val label: String) { MONTH("Last 30 days"), YEAR
 @Composable
 internal fun ReplayPage() {
     var period by remember { mutableStateOf(ReplayPeriod.YEAR) }
+    var story by remember { mutableStateOf<Pair<Wrapped.Summary, ReplayPeriod>?>(null) }
     val revision by Library.playHistoryRevision.collectAsState()
     val summaries by produceState<Pair<Wrapped.Summary, ReplaySummary>?>(null, period, revision) {
+        value = null
         value = withContext(Dispatchers.IO) {
             val now = System.currentTimeMillis()
             val since = when (period) {
@@ -52,6 +54,7 @@ internal fun ReplayPage() {
         }
     }
     val (wrapped, replay) = summaries ?: (null to null)
+    story?.let { (summary, range) -> WrappedStory(summary, range.label, onClose = { story = null }) }
     ScrollPage("Replay", "Your listening history on this computer.", spacing = 16.dp) {
         item {
             Row(Modifier.padding(horizontal = GUTTER), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -71,6 +74,7 @@ internal fun ReplayPage() {
                     wrapped.first?.let { Text("First track: ${it.title} · ${it.subtitle}") }
                     wrapped.onRepeat?.let { Text("Most repeated: ${it.title} · ${it.plays} plays in one day") }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(onClick = { story = wrapped to period }) { Text("View Wrapped") }
                         OutlinedButton(enabled = songs.isNotEmpty(), onClick = { Player.playAll(songs, 0) }) { Text("Play top tracks") }
                         OutlinedButton(enabled = songs.isNotEmpty(), onClick = { Player.playAll(songs.shuffled(), 0) }) { Text("Shuffle") }
                         OutlinedButton(onClick = {

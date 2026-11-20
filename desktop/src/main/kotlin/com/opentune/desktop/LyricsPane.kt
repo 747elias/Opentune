@@ -23,6 +23,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.rounded.FormatQuote
 import androidx.compose.material.icons.rounded.Remove
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -108,8 +109,18 @@ internal fun LyricsPane(song: Song, modifier: Modifier = Modifier) {
     val settings by AppSettings.lyrics.collectAsState()
     val lyrics = (state as? LyricsState.Found)?.lyrics
     val offset = lyricsOffset(settings.offsets[song.videoId], lyrics)
+    val quoteLines = remember(lyrics) {
+        when (lyrics) {
+            is Lyrics.Synced -> lyrics.lines.map(::lyricDisplayText)
+            is Lyrics.Plain -> lyrics.text.lines().filter(String::isNotBlank)
+            null -> emptyList()
+        }
+    }
+    var quoteAt by remember(song.videoId, lyrics) { mutableStateOf<Int?>(null) }
     Column(modifier) {
-        LyricsHeader(song, lyrics, offset)
+        LyricsHeader(song, lyrics, offset, quoteLines.isNotEmpty()) {
+            quoteAt = (lyrics as? Lyrics.Synced)?.lines?.activeIndex(Player.positionMs() + offset)?.coerceAtLeast(0) ?: 0
+        }
         Box(Modifier.weight(1f).fillMaxWidth()) {
             when {
                 state is LyricsState.Loading -> CircularProgressIndicator(Modifier.align(Alignment.Center))
@@ -123,10 +134,11 @@ internal fun LyricsPane(song: Song, modifier: Modifier = Modifier) {
             }
         }
     }
+    quoteAt?.let { DesktopLyricCard(song, quoteLines, it) { quoteAt = null } }
 }
 
 @Composable
-private fun LyricsHeader(song: Song, lyrics: Lyrics?, offset: Long) {
+private fun LyricsHeader(song: Song, lyrics: Lyrics?, offset: Long, canQuote: Boolean, onQuote: () -> Unit) {
     val scheme = MaterialTheme.colorScheme
     val settings by AppSettings.lyrics.collectAsState()
     var picking by remember { mutableStateOf(false) }
@@ -152,6 +164,7 @@ private fun LyricsHeader(song: Song, lyrics: Lyrics?, offset: Long) {
             }
         }
         Spacer(Modifier.weight(1f))
+        if (canQuote) IconButton(onClick = onQuote) { Icon(Icons.Rounded.FormatQuote, "Share lyrics", Modifier.size(20.dp)) }
         if (lyrics is Lyrics.Synced) {
             val choruses = remember(lyrics) { SongParts.choruses(lyrics) }
             if (choruses.isNotEmpty()) {

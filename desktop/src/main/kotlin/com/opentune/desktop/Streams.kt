@@ -12,13 +12,17 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.doubleOrNull
+import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import org.schabi.newpipe.extractor.NewPipe
 import org.schabi.newpipe.extractor.ServiceList
 import org.schabi.newpipe.extractor.downloader.Downloader
@@ -35,7 +39,13 @@ import org.schabi.newpipe.extractor.stream.DeliveryMethod
  * YouTube's best, which FFmpeg plays.
  */
 object Streams {
-    data class Stream(val url: String, val kbps: Int, val mimeType: String, val loudnessDb: Double? = null)
+    data class Stream(
+        val url: String,
+        val kbps: Int,
+        val mimeType: String,
+        val loudnessDb: Double? = null,
+        val headers: Map<String, String> = emptyMap(),
+    )
 
     /** Which of a song's streams: AAC for JavaFX, or Opus (YouTube's best) for FFmpeg. */
     enum class Kind(val extension: String) { AAC("m4a"), OPUS("webm") }
@@ -44,6 +54,9 @@ object Streams {
     private const val KEEP_MS = 60 * 60 * 1000L
     private data class Cached(val at: Long, val variants: Map<Kind, List<Stream>>)
     private val found = ConcurrentHashMap<String, Cached>()
+    private data class AccountStreams(val revision: Int, val cache: Cached)
+    private val signed = ConcurrentHashMap<String, AccountStreams>()
+    private val signedGate = Mutex()
 
     /** One extraction at a time: they share NewPipe's state and slow each other right down. */
     private val gate = Mutex()
@@ -93,19 +106,85 @@ object Streams {
     }
 
     suspend fun resolve(videoId: String, fresh: Boolean = false, kind: Kind = Kind.AAC, maxKbps: Int = Int.MAX_VALUE): Stream {
-        val cached = variants(videoId, fresh)
-        return choose(cached.variants[kind].orEmpty(), maxKbps) ?: error("No ${kind.name} audio for $videoId")
+        val candidates = variants(videoId, fresh, kind)
+        return choose(candidates[kind].orEmpty(), maxKbps) ?: error("No ${kind.name} audio for $videoId")
     }
 
     /** At most one extraction for the complete list of download candidates. */
     internal suspend fun downloadChoices(videoId: String, maxKbps: Int, preferred: Kind, fresh: Boolean): List<Pair<Kind, Stream>> {
-        val cached = variants(videoId, fresh)
+        val candidates = variants(videoId, fresh, preferred)
         val kinds = listOf(preferred) + Kind.entries.filter { it != preferred }
-        return kinds.mapNotNull { kind -> choose(cached.variants[kind].orEmpty(), maxKbps)?.let { kind to it } }
+        return kinds.mapNotNull { kind -> choose(candidates[kind].orEmpty(), maxKbps)?.let { kind to it } }
             .sortedWith(compareBy({ it.second.kbps !in 1..maxKbps }, { if (it.second.kbps > maxKbps) it.second.kbps else 0 }))
     }
 
-    private suspend fun variants(videoId: String, fresh: Boolean): Cached {
+    private suspend fun variants(videoId: String, fresh: Boolean, preferred: Kind): Map<Kind, List<Stream>> {
+        val guest = try {
+            Result.success(publicVariants(videoId, fresh).variants)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (failure: Exception) {
+            Result.failure(failure)
+        }
+        val public = guest.getOrDefault(emptyMap())
+        if (!fresh && public[preferred].orEmpty().isNotEmpty()) return public
+        val authorized = signedVariants(videoId, fresh)
+        if (authorized.isEmpty()) return guest.getOrThrow()
+        return Kind.entries.associateWith { kind -> authorized[kind].orEmpty().ifEmpty { public[kind].orEmpty() } }
+    }
+
+    private suspend fun signedVariants(videoId: String, fresh: Boolean): Map<Kind, List<Stream>> = signedGate.withLock {
+        if (!DesktopAccount.signedIn.value) return@withLock emptyMap()
+        val revision = DesktopAccount.revision.value
+        val now = System.currentTimeMillis()
+        val current = signed[videoId]?.takeIf { it.revision == revision && now - it.cache.at < KEEP_MS }
+        if (!fresh && current != null) return@withLock current.cache.variants
+        signed.entries.removeIf { it.value.revision != revision || now - it.value.cache.at >= KEEP_MS }
+        if (signed.size >= 256) signed.clear()
+
+        val result = withContext(Dispatchers.IO) {
+            try {
+                Innertube.ensureVisitorData()
+                // Use the Android app's existing signed-in player route. Only consume media
+                // where YouTube has returned a playable response for this listener.
+                val player = PlayerClient.ANDROID_MUSIC
+                val response = Innertube.player(videoId, player, authenticated = true)
+                rememberLoudness(response)
+                authorizedFormats(response, player.mediaHeaders(), loudnessDbFor(videoId))
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                emptyMap()
+            }
+        }
+        if (DesktopAccount.revision.value != revision) return@withLock emptyMap()
+        if (result.values.any { it.isNotEmpty() }) signed[videoId] = AccountStreams(revision, Cached(now, result))
+        result.filterValues { it.isNotEmpty() }
+    }
+
+    internal fun authorizedFormats(response: JsonObject, headers: Map<String, String>, loudnessDb: Double?): Map<Kind, List<Stream>> {
+        val playability = response["playabilityStatus"] as? JsonObject
+        if ((playability?.get("status") as? JsonPrimitive)?.contentOrNull != "OK") return emptyMap()
+        val data = response["streamingData"] as? JsonObject
+        val formats = data?.get("adaptiveFormats") as? JsonArray ?: return emptyMap()
+        val audio = formats.mapNotNull { element ->
+            val format = element as? JsonObject ?: return@mapNotNull null
+            val mime = (format["mimeType"] as? JsonPrimitive)?.contentOrNull?.substringBefore(';') ?: return@mapNotNull null
+            if (mime != "audio/mp4" && mime != "audio/webm") return@mapNotNull null
+            val url = (format["url"] as? JsonPrimitive)?.contentOrNull?.toHttpUrlOrNull()
+                ?.takeIf { it.isHttps && it.port == 443 && it.host.endsWith(".googlevideo.com") &&
+                    it.username.isEmpty() && it.password.isEmpty() } ?: return@mapNotNull null
+            val kbps = (format["bitrate"] as? JsonPrimitive)?.intOrNull?.div(1000)
+                ?.takeIf { it > 0 } ?: return@mapNotNull null
+            Stream(url.toString(), kbps, mime, loudnessDb, headers)
+        }
+        return Kind.entries.associateWith { kind ->
+            val mime = if (kind == Kind.AAC) "audio/mp4" else "audio/webm"
+            audio.filter { it.mimeType == mime }.sortedByDescending { it.kbps }
+        }
+    }
+
+    private suspend fun publicVariants(videoId: String, fresh: Boolean): Cached {
         fun current() = found[videoId]?.takeIf { !fresh && System.currentTimeMillis() - it.at < KEEP_MS }
         current()?.let { return it }
         return gate.withLock {
@@ -139,11 +218,13 @@ object Streams {
 
     /** The stream already found for [videoId], for saying what's playing. */
     fun known(videoId: String, kind: Kind = Kind.AAC, maxKbps: Int = Int.MAX_VALUE): Stream? =
-        found[videoId]?.variants?.get(kind)?.let { choose(it, maxKbps) }
+        signed[videoId]?.takeIf { it.revision == DesktopAccount.revision.value }?.cache?.variants?.get(kind)
+            ?.let { choose(it, maxKbps) } ?: found[videoId]?.variants?.get(kind)?.let { choose(it, maxKbps) }
 
     /** Forgets an address the server refused, so the next try finds a new one. */
     fun forget(videoId: String) {
         found.remove(videoId)
+        signed.remove(videoId)
     }
 
     private const val NEXT_ENDPOINT = "/youtubei/v1/next"

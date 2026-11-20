@@ -41,6 +41,12 @@ final class FilePreferences implements SharedPreferences {
         return values.getProperty(key);
     }
 
+    @Override public synchronized Map<String, ?> getAll() {
+        Map<String, String> copy = new HashMap<>();
+        for (String key : values.stringPropertyNames()) copy.put(key, raw(key));
+        return copy;
+    }
+
     @Override public String getString(String key, String defValue) {
         String v = raw(key);
         return v != null ? v : defValue;

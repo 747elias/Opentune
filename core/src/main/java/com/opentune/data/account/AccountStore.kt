@@ -136,7 +136,10 @@ object AccountStore {
 
     /** A Google cookie only signs requests if it carries one of the SAPISID cookies. */
     fun hasSession(cookie: String): Boolean =
-        cookie.split(';').any { it.trim().substringBefore('=') in SESSION_COOKIES }
+        cookie.split(';').any {
+            val pair = it.trim()
+            pair.substringBefore('=') in SESSION_COOKIES && pair.substringAfter('=', "").isNotBlank()
+        }
 
     /** Signs in a freshly captured cookie as a new active account. */
     @Synchronized

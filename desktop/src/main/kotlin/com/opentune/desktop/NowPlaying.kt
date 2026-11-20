@@ -159,11 +159,11 @@ internal fun NowPlaying(track: Song, docked: Boolean, onClose: () -> Unit) {
     val theme by AppSettings.theme.collectAsState()
     val preferences by AppSettings.ui.collectAsState()
     val duration by Player.durationOf.collectAsState()
+    val length = duration.takeIf { it.first == track.videoId }?.second?.takeIf { it > 0 }
+        ?: (track.durationText?.let(Player::seconds)?.times(1000)?.toLong() ?: 0)
     val cover by androidx.compose.runtime.produceState(track.thumbnailUrl, track.videoId, preferences.albumCovers, duration) {
         value = track.thumbnailUrl
         if (preferences.albumCovers) {
-            val length = duration.takeIf { it.first == track.videoId }?.second?.takeIf { it > 0 }
-                ?: (track.durationText?.let(Player::seconds)?.times(1000)?.toLong() ?: 0)
             value = com.opentune.data.covers.AlbumCovers.cached(track)
                 ?: com.opentune.data.covers.AlbumCovers.coverFor(track, length) ?: track.thumbnailUrl
         }
@@ -182,7 +182,7 @@ internal fun NowPlaying(track: Song, docked: Boolean, onClose: () -> Unit) {
                     Row(Modifier.fillMaxSize().padding(horizontal = 48.dp, vertical = 24.dp), verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f).fillMaxHeight().widthIn(max = 560.dp)) {
                             PlayerHeader(song, docked, onClose)
-                            Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) { BigCover(song, playing) }
+                            Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) { BigCover(song, playing, length, preferences) }
                             PlayerFoot(song, showLyrics = true, onLyrics = null)
                         }
                         Spacer(Modifier.width(48.dp))
@@ -202,7 +202,7 @@ internal fun NowPlaying(track: Song, docked: Boolean, onClose: () -> Unit) {
                             contentAlignment = Alignment.Center,
                         ) { lyrics ->
                             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                                if (lyrics) LyricsPane(song, Modifier.fillMaxSize()) else BigCover(song, playing)
+                                if (lyrics) LyricsPane(song, Modifier.fillMaxSize()) else BigCover(song, playing, length, preferences)
                             }
                         }
                         PlayerFoot(song, showLyrics) { showLyrics = !showLyrics }
@@ -374,7 +374,7 @@ private fun PlayerHeader(song: Song, docked: Boolean, onClose: () -> Unit) {
 
 /** The cover, as large as fits, easing a little smaller while paused and crossfading between songs. */
 @Composable
-private fun BigCover(song: Song, playing: Boolean) {
+private fun BigCover(song: Song, playing: Boolean, durationMs: Long, preferences: com.opentune.data.settings.InterfaceSettings) {
     val scale by animateFloatAsState(if (playing) 1f else 0.86f, spring(dampingRatio = 0.7f, stiffness = 300f), label = "coverScale")
     BoxWithConstraints(Modifier.fillMaxSize().padding(vertical = 12.dp), contentAlignment = Alignment.Center) {
         val side = minOf(maxWidth, maxHeight)
@@ -382,14 +382,15 @@ private fun BigCover(song: Song, playing: Boolean) {
             song.videoId,
             transitionSpec = { (fadeIn(tween(320)) + scaleIn(tween(420, easing = FastOutSlowInEasing), 0.94f)) togetherWith (fadeOut(tween(200)) + scaleOut(tween(300), 1.03f)) },
             label = "cover",
-        ) { _ ->
+        ) { id ->
             val shape = RoundedCornerShape(24.dp)
-            Artwork(
-                song.thumbnailUrl,
-                Modifier.size(side).aspectRatio(1f).graphicsLayer { scaleX = scale; scaleY = scale }
-                    .shadow(28.dp, shape, ambientColor = Color.Black.copy(alpha = 0.5f), spotColor = Color.Black.copy(alpha = 0.6f)),
-                shape,
-            )
+            val modifier = Modifier.size(side).aspectRatio(1f).graphicsLayer { scaleX = scale; scaleY = scale }
+                .shadow(28.dp, shape, ambientColor = Color.Black.copy(alpha = 0.5f), spotColor = Color.Black.copy(alpha = 0.6f))
+            if (preferences.animatedCovers && !preferences.reduceAnimation && id == song.videoId) {
+                MotionCover(song, durationMs, playing, preferences.motionQuality, preferences.animatedCoversWifiOnly, shape, modifier)
+            } else {
+                Artwork(song.thumbnailUrl, modifier, shape)
+            }
         }
     }
 }
@@ -426,7 +427,7 @@ private fun PlayerFoot(song: Song, showLyrics: Boolean, onLyrics: (() -> Unit)?)
             Spacer(Modifier.width(10.dp))
             HeartButton(isLiked) { DesktopAccount.setLiked(song, !isLiked) }
             Spacer(Modifier.width(10.dp))
-            CastButton()
+            AudioOutputButton()
             MoreButton(song)
         }
         SeekBar(progress, Modifier.padding(top = 14.dp))

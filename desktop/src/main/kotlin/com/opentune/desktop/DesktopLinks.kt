@@ -25,12 +25,12 @@ internal object DesktopLinks {
         return pending.trySend(parsed).isSuccess
     }
 
-    fun install(arguments: Array<String>) {
+    fun install(arguments: Array<String>, show: () -> Unit) {
         arguments.forEach(::submit)
         if (!Desktop.isDesktopSupported()) return
         runCatching {
             val desktop = Desktop.getDesktop()
-            if (desktop.isSupported(Desktop.Action.APP_OPEN_URI)) desktop.setOpenURIHandler { submit(it.uri.toString()) }
+            if (desktop.isSupported(Desktop.Action.APP_OPEN_URI)) desktop.setOpenURIHandler { if (submit(it.uri.toString())) show() }
         }
     }
 

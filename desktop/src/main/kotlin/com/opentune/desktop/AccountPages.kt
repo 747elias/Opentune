@@ -45,6 +45,7 @@ import com.opentune.data.model.Song
 import com.opentune.data.settings.AppSettings
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withContext
 
 internal data object AccountLibraryKey
@@ -59,11 +60,15 @@ internal fun YouTubeAccountSection() {
     val library by DesktopAccount.library.collectAsState()
     val playback by AppSettings.playback.collectAsState()
     var linking by remember { mutableStateOf(false) }
+    var signingInOnMac by remember { mutableStateOf(false) }
+    var signInError by remember { mutableStateOf<String?>(null) }
     var choosingChannel by remember { mutableStateOf(false) }
+    val macLogin = remember { MacYouTubeLogin.available }
     val name = listeningAs ?: active?.name
 
     Text(
         if (signedIn) name?.let { "Signed in as $it" } ?: "YouTube Music account connected"
+        else if (macLogin) "Sign in on the YouTube Music website to open your account’s library."
         else "Use OpenTune on your Android phone to sign in and access your YouTube Music library.",
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
@@ -71,11 +76,21 @@ internal fun YouTubeAccountSection() {
         Text(it, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-        Button(onClick = { linking = true }) { Text(if (signedIn) "Link another account" else "Sign in with Android") }
-        if (signedIn) OutlinedButton(onClick = { choosingChannel = true }) { Text("Listen as") }
-        if (signedIn) TextButton(onClick = DesktopAccount::signOut) { Text("Sign out") }
+        if (macLogin) {
+            Button(onClick = { signInError = null; signingInOnMac = true }) {
+                Text(if (signedIn) "Add another account" else "Sign in on this Mac")
+            }
+            OutlinedButton(onClick = { linking = true }) { Text("Sign in with Android") }
+        } else {
+            Button(onClick = { linking = true }) { Text(if (signedIn) "Link another account" else "Sign in with Android") }
+        }
     }
+    signInError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
     if (signedIn) {
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            OutlinedButton(onClick = { choosingChannel = true }) { Text("Listen as") }
+            TextButton(onClick = DesktopAccount::signOut) { Text("Sign out") }
+        }
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text("Sync listening history")
@@ -91,6 +106,27 @@ internal fun YouTubeAccountSection() {
         }
         TextButton(onClick = DesktopAccount::refresh, enabled = !library.loading) { Text("Refresh YouTube Music library") }
         library.problem?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+    }
+    if (signingInOnMac) {
+        LaunchedEffect(Unit) {
+            try {
+                MacYouTubeLogin.signIn()?.let { DesktopAccount.acceptSession(it) }
+            } catch (_: TimeoutCancellationException) {
+                signInError = "Sign-in timed out. Open a new sign-in window and try again."
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                signInError = "Couldn’t finish signing in. Try again or connect from your Android phone."
+            } finally {
+                signingInOnMac = false
+            }
+        }
+        AlertDialog(
+            onDismissRequest = { signingInOnMac = false },
+            title = { Text("Sign in to YouTube Music") },
+            text = { Text("Complete sign-in in the YouTube Music window. If Google declines sign-in there, you can connect using the Android app.") },
+            confirmButton = { TextButton(onClick = { signingInOnMac = false }) { Text("Cancel") } },
+        )
     }
     accounts.filterNot { it.active }.forEach { account ->
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
@@ -194,7 +230,7 @@ internal fun AccountLibraryPage(onOpenAny: (Any) -> Unit, onSettings: () -> Unit
     }
     ScrollPage("YouTube Music library") {
         if (!signedIn) {
-            item { Message("Sign in to YouTube Music", "Link your Android phone to open your account’s library.", action = "Open settings" to onSettings) }
+            item { Message("Sign in to YouTube Music", "Connect your account to open its library.", action = "Open settings" to onSettings) }
         } else {
             item {
                 Row(Modifier.padding(horizontal = GUTTER), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {

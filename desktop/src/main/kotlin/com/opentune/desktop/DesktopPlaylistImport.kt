@@ -47,6 +47,10 @@ internal object DesktopPlaylistImport {
 
     fun file(file: File) = start { import(ExportedPlaylists.read(file.name, file.readBytes())) }
 
+    fun spotify(name: String, tracks: List<Spotify.Track>) = start {
+        import(listOf(ExportedPlaylists.Exported(name, tracks)))
+    }
+
     fun cancel() { job?.cancel() }
 
     @Synchronized

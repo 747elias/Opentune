@@ -108,11 +108,13 @@ internal fun SettingsPage() {
                             Group.LYRICS -> LyricsSection()
                             Group.ACCOUNTS -> Column(verticalArrangement = Arrangement.spacedBy(18.dp)) {
                                 ConnectedSection()
+                                Section("Spotify") { SpotifyAccountSection() }
                                 Section("ListenBrainz") { ListenBrainzSettings() }
                             }
                             Group.SERVER -> ServerSection()
                             Group.DOWNLOADS -> Section("Downloads") { DownloadPreferences() }
                             Group.DATA -> Column(verticalArrangement = Arrangement.spacedBy(18.dp)) {
+                                Section("Hidden songs and artists") { HiddenMusicSettings() }
                                 Section("Import a playlist") { PlaylistImportSettings() }
                                 Section("Backup") { BackupSettings() }
                             }
@@ -193,11 +195,26 @@ private fun PlaybackSection() {
     val library by AppSettings.library.collectAsState()
     Section("Playback") {
         SwitchRow("Autoplay", "When the queue ends, keep going with similar songs", playback.autoplay, AppSettings::setAutoplay)
+        val source = playback.recommender.takeIf { it in DesktopRecommendations.sources } ?: DesktopRecommendations.sources.first()
+        Choices("Recommendation source", DesktopRecommendations.sources, source, { it.label }) { selected ->
+            AppSettings.updatePlayback { it.copy(recommender = selected) }
+        }
+        SwitchRow("Smart Shuffle", "Add recommendations between the songs already in the queue.", playback.smartShuffle) { on ->
+            AppSettings.updatePlayback { it.copy(smartShuffle = on) }
+        }
         SwitchRow("Hide explicit content", "Keep tracks marked explicit out of discovery and autoplay.", library.hideExplicit) { on ->
             AppSettings.updateLibrary { it.copy(hideExplicit = on) }
         }
         Choices("Streaming quality", com.opentune.data.settings.AudioQuality.entries, playback.wifiQuality, { it.label }) { quality ->
             AppSettings.updatePlayback { it.copy(wifiQuality = quality) }
+        }
+        Text("Audio output", style = MaterialTheme.typography.bodyLarge)
+        AudioOutputPicker()
+        SwitchRow("High-resolution PCM", "Use 32-bit float or 24-bit PCM when the output supports it.", playback.floatOutput) { on ->
+            AppSettings.updatePlayback { it.copy(floatOutput = on) }
+        }
+        SwitchRow("Skip silence", "Shorten silent passages longer than one second.", playback.skipSilence) { on ->
+            AppSettings.updatePlayback { it.copy(skipSilence = on) }
         }
         SwitchRow("Loudness normalization", "Keep songs at a similar volume.", playback.loudnessNormalization) { on ->
             AppSettings.updatePlayback { it.copy(loudnessNormalization = on) }
@@ -241,6 +258,9 @@ private fun PlaybackSection() {
             TextButton(onClick = { AppSettings.updateSound { it.copy(speed = 1f) } }, enabled = sound.speed != 1f) { Text("Reset") }
         }
         SleepChips(sleep)
+        SwitchRow("Sleep timer fade-out", "Gradually lower the volume before the timer stops playback.", playback.sleepWindDown) { on ->
+            AppSettings.updatePlayback { it.copy(sleepWindDown = on) }
+        }
     }
 }
 
@@ -448,6 +468,17 @@ private fun AppearanceSection() {
         SwitchRow("Colour from the song", "A soft wash of the playing cover's colour behind the pages", theme.colorFromArtwork) { on -> AppSettings.updateTheme { it.copy(colorFromArtwork = on) } }
         SwitchRow("Sharper album covers", "Use matching high-resolution album art in the player.", ui.albumCovers) { on ->
             AppSettings.updateUi { it.copy(albumCovers = on) }
+        }
+        SwitchRow("Animated covers", "Loop matching animated Apple Music covers in the player.", ui.animatedCovers) { on ->
+            AppSettings.updateUi { it.copy(animatedCovers = on) }
+        }
+        if (ui.animatedCovers) {
+            Choices("Animated cover quality", com.opentune.data.settings.MotionQuality.entries, ui.motionQuality, { it.label }) { quality ->
+                AppSettings.updateUi { it.copy(motionQuality = quality) }
+            }
+            SwitchRow("Animated covers on unmetered networks", "Use an unmetered connection for animated covers.", ui.animatedCoversWifiOnly) { on ->
+                AppSettings.updateUi { it.copy(animatedCoversWifiOnly = on) }
+            }
         }
         SwitchRow("Artist signatures (beta)", "An artist's handwritten signature over their photo, in place of their name, when there's one", ui.artistSignatures) { on ->
             AppSettings.updateUi { it.copy(artistSignatures = on) }

@@ -6,14 +6,13 @@ import com.opentune.data.local.LocalMusic
 import com.opentune.data.podcasts.Podcasts
 import com.opentune.data.radio.Radio
 import com.opentune.data.together.RoomProtocol
-import com.opentune.data.innertube.Innertube
-import com.opentune.data.innertube.InnertubeParser
 import com.opentune.data.isYouTubeId
 import com.opentune.data.model.Song
 import com.opentune.data.settings.AppSettings
 import com.opentune.data.settings.EQ_BANDS_HZ
 import com.opentune.data.settings.PlaybackSettings
 import com.opentune.data.subsonic.Subsonic
+import com.opentune.playback.SleepTimer
 import com.opentune.playback.mix.MixPlan
 import com.opentune.playback.mix.automixPlan
 import com.opentune.playback.mix.bassCuts
@@ -76,6 +75,10 @@ object Player {
     private val _quality = MutableStateFlow<Quality?>(null)
     val quality: StateFlow<Quality?> = _quality.asStateFlow()
 
+    internal data class SignalPath(val decoder: String, val codec: String?, val route: DesktopAudioOutput.Route?)
+    private val _signalPath = MutableStateFlow<SignalPath?>(null)
+    internal val signalPath = _signalPath.asStateFlow()
+
     /** The song's id and its exact length once the player knows it, for lyrics to match on. */
     private val _durationOf = MutableStateFlow("" to 0L)
     val durationOf: StateFlow<Pair<String, Long>> = _durationOf.asStateFlow()
@@ -103,11 +106,11 @@ object Player {
             val at = _index.value
             val seed = q.getOrNull(at)?.takeIf(::musicTrack) ?: q.first(::musicTrack)
             scope.launch {
-                val found = runCatching { InnertubeParser.parseWatchQueue(Innertube.next(seed.videoId)) }.getOrDefault(emptyList())
+                val found = DesktopRecommendations.after(seed)
                 synchronized(gate) {
                     if (_shuffle.value != Shuffle.SMART || _queue.value !== q || _index.value != at) return@synchronized
                     val have = q.mapTo(HashSet()) { it.videoId }
-                    val picks = found.filter { musicTrack(it) && Pages.allowed(it) && have.add(it.videoId) }.iterator()
+                    val picks = DesktopHidden.suggestions(found).filter { musicTrack(it) && Pages.allowed(it) && have.add(it.videoId) }.iterator()
                     _queue.value = q.take(at + 1) + buildList {
                         q.drop(at + 1).forEachIndexed { i, song ->
                             add(song)
@@ -206,7 +209,13 @@ object Player {
                         applyNormalization(d)
                     }
                     val current = main
-                    if (current?.source?.decoder == Decoder.FLAC && filteredOutput() && Ffmpeg.available && blend == null) {
+                    val engine = current?.engine
+                    val requiresReopen = when (engine) {
+                        is FlacEngine -> filteredOutput() && Ffmpeg.available
+                        is FfmpegEngine -> engine.floatOutput != AppSettings.playback.value.floatOutput
+                        else -> false
+                    }
+                    if (requiresReopen && current != null && !current.completed && blend == null) {
                         open(_index.value, current.engine.positionMs(), wanted, recordPlay = false)
                     }
                 }
@@ -217,6 +226,7 @@ object Player {
                 delay(if (blend != null) 40 else if (wanted) 120 else 500)
                 synchronized(gate) {
                     if (wanted && _playing.value && System.nanoTime() - lastSaved >= 5_000_000_000L) saveProgress()
+                    if (_sleep.value == Sleep.EndOfSong) fadeAtEnd()
                     tickMix()
                 }
             }
@@ -270,6 +280,34 @@ object Player {
         if (!DesktopRooms.suggest(song)) synchronized(gate) { open(i) }
     }
 
+    internal fun dropHiddenRecommendations() = synchronized(gate) {
+        if (!DesktopRooms.isGuest) {
+            val hidden = DesktopHidden.list.value
+            filterUpcoming { it.smartShuffle && hidden.hides(it) }
+        }
+    }
+
+    internal fun dropDisliked(id: String) = synchronized(gate) {
+        val isCurrent = current?.videoId == id
+        if (!DesktopRooms.isGuest) filterUpcoming { it.videoId == id }
+        if (isCurrent && !DesktopRooms.intercept(RoomProtocol.Control.Next)) {
+            val next = nextIndex(automatic = false)
+                ?.takeIf { _queue.value.getOrNull(it)?.videoId != id }
+            if (next != null) open(next) else setPlayState(false)
+        }
+    }
+
+    private fun filterUpcoming(remove: (Song) -> Boolean) {
+        val q = _queue.value
+        val split = (_index.value + 1).coerceIn(0, q.size)
+        val upcoming = q.drop(split)
+        val allowed = upcoming.filterNot(remove)
+        if (upcoming != allowed) {
+            cancelCue()
+            _queue.value = q.take(split) + allowed
+        }
+    }
+
     fun toggle() = setPlaying(!wanted)
 
     fun setPlaying(play: Boolean) {
@@ -293,8 +331,6 @@ object Player {
         listOfNotNull(d, incoming, blend?.tail).forEach { if (play) it.engine.play() else it.engine.pause() }
         _playing.value = play && d?.started == true
     }
-
-    private fun pauseAll() = synchronized(gate) { setPlayState(false) }
 
     fun next() {
         if (!DesktopRooms.intercept(RoomProtocol.Control.Next)) nextFromRoom()
@@ -321,39 +357,58 @@ object Player {
     }
 
     /** Stops playback in [minutes], the last few turning the volume down; null turns the timer off. */
-    fun sleepIn(minutes: Int?) {
+    fun sleepIn(minutes: Int?): Unit = synchronized(gate) {
         sleepJob?.cancel()
+        sleepJob = null
         setFade(1.0)
         if (minutes == null) {
             _sleep.value = null
-            return
+            return@synchronized
         }
         val total = minutes * 60_000L
-        val at = System.currentTimeMillis() + total
-        _sleep.value = Sleep.At(at, minutes)
+        val timer = Sleep.At(System.currentTimeMillis() + total, minutes)
+        _sleep.value = timer
         sleepJob = scope.launch {
-            // The last third, at most three minutes, fades out, as on the phone.
-            val window = minOf(180_000L, total / 3)
+            val window = SleepTimer.fadeMsFor(total)
             while (true) {
-                val left = at - System.currentTimeMillis()
-                if (left <= 0) break
-                setFade(if (left < window) left.toDouble() / window else 1.0)
-                delay(1_000)
+                val nextCheck = synchronized(gate) {
+                    if (_sleep.value !== timer) return@launch
+                    val left = timer.epochMs - System.currentTimeMillis()
+                    if (left <= 0) {
+                        setPlayState(false)
+                        setFade(1.0)
+                        _sleep.value = null
+                        sleepJob = null
+                        return@launch
+                    }
+                    val windingDown = AppSettings.playback.value.sleepWindDown && left < window
+                    setFade(if (windingDown) SleepTimer.gainAt(1f - left.toFloat() / window).toDouble() else 1.0)
+                    minOf(left, if (windingDown) 200L else 1_000L)
+                }
+                delay(nextCheck)
             }
-            pauseAll()
-            setFade(1.0)
-            _sleep.value = null
         }
     }
 
     /** Stops playback when the song playing ends. */
-    fun sleepAtEndOfSong() {
+    fun sleepAtEndOfSong() = synchronized(gate) {
         sleepJob?.cancel()
+        sleepJob = null
         setFade(1.0)
         _sleep.value = Sleep.EndOfSong
     }
 
-    private fun setFade(f: Double) = synchronized(gate) {
+    private fun fadeAtEnd() {
+        val left = main?.engine?.let { engine ->
+            engine.durationMs().takeIf { it > 0 }?.minus(engine.positionMs())
+        } ?: -1L
+        val fadeWindow = 15_000L
+        val windingDown = AppSettings.playback.value.sleepWindDown && left in 0 until fadeWindow
+        setFade(if (windingDown) SleepTimer.gainAt(1f - left.toFloat() / fadeWindow).toDouble() else 1.0)
+    }
+
+    private fun setFade(f: Double) {
+        if (fade == f) return
         fade = f
         applyVolume()
     }
@@ -466,7 +521,8 @@ object Player {
         startBackgroundWork(song)
     }
 
-    internal fun outputChanged() = synchronized(gate) {
+    internal fun outputChanged(localOnly: Boolean = false) = synchronized(gate) {
+        if (localOnly && (DesktopCast.active.value != null || main?.completed == true)) return@synchronized
         if (current != null && (main != null || wanted)) open(_index.value, positionMs(), wanted, recordPlay = false)
     }
 
@@ -482,6 +538,7 @@ object Player {
         _error.value = null
         _loading.value = true
         _quality.value = null
+        _signalPath.value = null
         _durationOf.value = song.videoId to 0L
         wanted = true
         _playing.value = false
@@ -516,7 +573,7 @@ object Player {
     }
 
     private fun filteredOutput(): Boolean = AppSettings.equalizer.value.let { it.enabled || it.headphone != null } ||
-        !AppSettings.sound.value.isDefault || AppSettings.playback.value.let { it.clarity || it.spatialAudio }
+        !AppSettings.sound.value.isDefault || AppSettings.playback.value.let { it.clarity || it.spatialAudio || it.skipSilence }
 
     private fun standardSource(
         address: String,
@@ -577,7 +634,8 @@ object Player {
         val failure: (String?) -> Unit = { message -> synchronized(gate) { sourceFailed(d, message) } }
         d.engine = when (source.decoder) {
             Decoder.FFMPEG -> FfmpegEngine(source.address, from, play, ready, started, playing, ended, failure,
-                out = SoundCard(120), startImmediately = false, headers = source.headers)
+                out = SoundCard(120), startImmediately = false, headers = source.headers,
+                floatOutput = AppSettings.playback.value.floatOutput)
             Decoder.JAVA_FX -> FxEngine(source.address, from, play, ready, started, playing, ended, failure)
             Decoder.FLAC -> FlacEngine(source.readFlac!!, from, play, started, ended, failure,
                 out = SoundCard(160), onReady = ready, startImmediately = false)
@@ -590,6 +648,14 @@ object Player {
         d.ready = true
         if (main !== d) return
         _quality.value = qualityOf(d)
+        val decoder = when (d.source.decoder) {
+            Decoder.FFMPEG -> "FFmpeg"
+            Decoder.JAVA_FX -> "JavaFX media"
+            Decoder.FLAC -> "FLAC decoder"
+            Decoder.CAST -> "Remote playback"
+        }
+        val codec = (d.engine as? FfmpegEngine)?.codec ?: "FLAC".takeIf { d.source.decoder == Decoder.FLAC }
+        _signalPath.value = SignalPath(decoder, codec, d.engine.audioRoute())
         _loading.value = false
         if (duration > 0) _durationOf.value = d.song.videoId to duration
         applyNormalization(d)
@@ -630,8 +696,11 @@ object Player {
         if (main !== d) return
         DesktopListeningProgress.finish(d.song.videoId)
         if (_sleep.value == Sleep.EndOfSong || DesktopRooms.isGuest) {
-            if (_sleep.value == Sleep.EndOfSong) _sleep.value = null
             setPlayState(false)
+            if (_sleep.value == Sleep.EndOfSong) {
+                _sleep.value = null
+                setFade(1.0)
+            }
         } else {
             advance(automatic = true)
         }
@@ -670,6 +739,7 @@ object Player {
         wanted = false
         _loading.value = false
         _playing.value = false
+        _signalPath.value = null
         _error.value = "Couldn't play ${song.title}"
     }
 
@@ -1021,13 +1091,13 @@ object Player {
         opening = true
         _loading.value = true
         scope.launch {
-            val more = runCatching { InnertubeParser.parseWatchQueue(Innertube.next(last.videoId)) }.getOrDefault(emptyList())
+            val more = DesktopRecommendations.after(last)
             synchronized(gate) {
                 if (gen != generation) return@synchronized
                 opening = false
                 val have = _queue.value.mapTo(HashSet()) { it.videoId }
                 if (AppSettings.playback.value.noRepeatInSession) have.addAll(playedInSession)
-                val fresh = more.filter { Pages.allowed(it) && have.add(it.videoId) }
+                val fresh = DesktopHidden.suggestions(more).filter { Pages.allowed(it) && have.add(it.videoId) }
                 if (fresh.isEmpty() || !wanted) {
                     _loading.value = false
                     setPlayState(false)

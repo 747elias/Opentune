@@ -71,6 +71,7 @@ for plist in "$contents/Info.plist" "$arm_payload/Contents/Info.plist" "$intel_p
     plutil -replace NSBonjourServices -json '["_googlecast._tcp"]' "$plist"
 done
 plutil -replace CFBundleURLTypes -json '[{"CFBundleURLName":"com.opentune.desktop.links","CFBundleURLSchemes":["opentune"]}]' "$contents/Info.plist"
+plutil -replace CFBundleDocumentTypes -json '[{"CFBundleTypeName":"Audio File","CFBundleTypeRole":"Viewer","LSHandlerRank":"Alternate","LSItemContentTypes":["public.audio"]}]' "$contents/Info.plist"
 
 xcrun clang -arch arm64 -arch x86_64 -mmacosx-version-min=11.0 \
     -std=c11 -D_DARWIN_C_SOURCE -O2 -Wall -Wextra -Werror \
@@ -80,13 +81,27 @@ xcrun lipo "$contents/MacOS/OpenTune" -verify_arch arm64 x86_64
 media=libOpenTuneMedia.dylib
 xcrun clang -arch arm64 -arch x86_64 -mmacosx-version-min=11.0 \
     -fobjc-arc -fblocks -O2 -Wall -Wextra -Werror -dynamiclib \
-    -framework Foundation -framework MediaPlayer -Wl,-install_name,@rpath/$media \
-    "$scripts/macos-now-playing.m" -o "$work/$media"
+    -framework Foundation -framework MediaPlayer -framework Network -framework IOKit -framework UserNotifications \
+    -Wl,-install_name,@rpath/$media "$scripts/macos-now-playing.m" "$scripts/macos-download-conditions.m" \
+    "$scripts/macos-notifications.m" -o "$work/$media"
 xcrun lipo "$work/$media" -verify_arch arm64 x86_64
 for payload in "$arm_payload" "$intel_payload"; do
     mkdir -p "$payload/Contents/Frameworks"
     cp "$work/$media" "$payload/Contents/Frameworks/$media"
 done
+
+login=OpenTuneLogin
+install_login() {
+    local payload=$1 arch=$2
+    local helper="$payload/Contents/Helpers/$login"
+    mkdir -p "$(dirname "$helper")"
+    xcrun swiftc -O -target "$arch-apple-macosx11.0" \
+        -sdk "$(xcrun --sdk macosx --show-sdk-path)" \
+        "$scripts/macos-login.swift" -o "$helper"
+    xcrun lipo "$helper" -verify_arch "$arch"
+}
+install_login "$arm_payload" arm64
+install_login "$intel_payload" x86_64
 
 sign=(codesign --force --sign "$identity")
 if [[ "$identity" != - ]]; then
@@ -105,6 +120,7 @@ sign_payload() {
     done < <(find "$runtime" -type f \( -perm -100 -o -name '*.dylib' \) -print0)
     "${sign[@]}" "$runtime"
     "${sign[@]}" "$payload/Contents/Frameworks/$media"
+    "${sign[@]}" "$payload/Contents/Helpers/$login"
 
     # The JVM compiles code at runtime and extracts media and graphics libraries from jars.
     if [[ "$identity" != - ]]; then

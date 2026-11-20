@@ -1,12 +1,14 @@
 package com.opentune.desktop
 
+import java.awt.Dialog
 import java.awt.EventQueue
 import java.awt.FileDialog
 import java.io.File
 import javax.swing.JFileChooser
 import kotlinx.coroutines.suspendCancellableCoroutine
 
-internal suspend fun desktopFile(title: String, saveAs: String? = null): File? = desktopFiles(title, saveAs).firstOrNull()
+internal suspend fun desktopFile(title: String, saveAs: String? = null, owner: Dialog? = null): File? =
+    desktopFiles(title, saveAs, owner = owner).firstOrNull()
 
 internal suspend fun desktopFiles(
     title: String,
@@ -14,6 +16,7 @@ internal suspend fun desktopFiles(
     multiple: Boolean = false,
     directories: Boolean = false,
     extensions: Set<String> = emptySet(),
+    owner: Dialog? = null,
 ): List<File> = suspendCancellableCoroutine { result ->
     EventQueue.invokeLater {
         if (!result.isActive) return@invokeLater
@@ -27,15 +30,15 @@ internal suspend fun desktopFiles(
                     listOfNotNull(chooser.selectedFile)
                 } else emptyList()
             } else {
-                nativeFileDialog(title, saveAs, multiple, directories, extensions)
+                nativeFileDialog(title, saveAs, multiple, directories, extensions, owner)
             }
         })
     }
 }
 
-private fun nativeFileDialog(title: String, saveAs: String?, multiple: Boolean, directories: Boolean, extensions: Set<String>): List<File> {
+private fun nativeFileDialog(title: String, saveAs: String?, multiple: Boolean, directories: Boolean, extensions: Set<String>, owner: Dialog?): List<File> {
     val mode = if (saveAs == null) FileDialog.LOAD else FileDialog.SAVE
-    val dialog = FileDialog(DesktopWindow.window, title, mode)
+    val dialog = if (owner == null) FileDialog(DesktopWindow.window, title, mode) else FileDialog(owner, title, mode)
     val directoryMode = "apple.awt.fileDialogForDirectories"
     val restoreMode = DesktopWindow.isMac && directories
     val previous = if (restoreMode) System.getProperty(directoryMode) else null

@@ -220,6 +220,11 @@ jobs:
           test -z "$(find "$app" -type f ! -perm -004 -print -quit)"
           test -z "$(find "$executable" ! -perm -001 -print -quit)"
           lipo "$executable" -verify_arch arm64 x86_64
+          for payload_arch in arm64 x86_64; do
+            helper="$app/Contents/Helpers/OpenTune-$payload_arch.app/Contents/Helpers/OpenTuneLogin"
+            test -x "$helper"
+            lipo "$helper" -verify_arch "$payload_arch"
+          done
           codesign --verify --deep --strict "$app"
           "$executable" --self-check | tee "$RUNNER_TEMP/opentune-self-check.log"
           if grep -q '^OpenTune: ' "$RUNNER_TEMP/opentune-self-check.log"; then
@@ -229,4 +234,25 @@ jobs:
             grep -Fx 'macOS MediaPlayer: ok, loaded' "$RUNNER_TEMP/opentune-self-check.log"
             "$executable" --ui-check | tee "$RUNNER_TEMP/opentune-ui-check.log"
             grep -Fx 'OpenTune window: ready' "$RUNNER_TEMP/opentune-ui-check.log"
+            if grep -Fxq 'OpenTune window: continued after close and reopen' "$RUNNER_TEMP/opentune-ui-check.log"; then
+              plutil -extract CFBundleDocumentTypes.0.LSItemContentTypes.0 raw "$app/Contents/Info.plist" | grep -Fx public.audio
+              fixture="$RUNNER_TEMP/OpenTune Finder audio fixture.wav"
+              python3 - "$fixture" <<'PY'
+          import sys
+          import wave
+
+          with wave.open(sys.argv[1], "wb") as audio:
+              audio.setparams((1, 2, 8000, 0, "NONE", "not compressed"))
+              audio.writeframes(bytes(32000))
+          PY
+              finder_log="$RUNNER_TEMP/opentune-finder-check.log"
+              finder_errors="$RUNNER_TEMP/opentune-finder-check.stderr"
+              touch "$finder_log" "$finder_errors"
+              open -W -n -a "$app" --stdout "$finder_log" --stderr "$finder_errors" \
+                "$fixture" --args --ui-check "--ui-check-finder=$fixture"
+              cat "$finder_log" "$finder_errors"
+              grep -Fx 'OpenTune Finder audio: opened' "$finder_log"
+              grep -Fx 'OpenTune window: ready' "$finder_log"
+            fi
           fi
+          grep -Fx 'macOS YouTube Music sign-in: ok, isolated WebKit session' "$RUNNER_TEMP/opentune-self-check.log"

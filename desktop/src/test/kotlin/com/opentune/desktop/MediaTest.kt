@@ -10,6 +10,7 @@ import javax.sound.sampled.AudioFormat
 import javax.sound.sampled.AudioFileFormat
 import javax.sound.sampled.AudioInputStream
 import javax.sound.sampled.AudioSystem
+import com.opentune.data.settings.AppSettings
 import com.opentune.data.settings.AutomixPerformance
 import kotlinx.coroutines.runBlocking
 import org.bytedeco.ffmpeg.global.avcodec
@@ -97,6 +98,44 @@ class MediaTest {
         assertTrue("peak $loudest", loudest in 8_000..16_000)
     }
 
+    @Test fun ffmpegTrimsSilenceWithoutShorteningTheMediaClock() {
+        val file = Files.createTempFile("opentune-silence", ".wav").toFile()
+        val skipSilence = AppSettings.playback.value.skipSilence
+        val rate = 16_000
+        val sourceFrames = rate * 4
+        val samples = ByteArray(sourceFrames * 2)
+        for (frame in 0 until sourceFrames) {
+            if (frame in rate until rate * 3) continue
+            samples[frame * 2 + 1] = 16
+        }
+        val out = Capture()
+        val ended = CountDownLatch(1)
+        var problem: String? = null
+        val engine = FfmpegEngine(
+            file.absolutePath, startAtMs = { 0 }, autoplay = true,
+            onReady = {}, onStarted = {}, onPlaying = {},
+            onEnd = { ended.countDown() }, onError = { problem = it; ended.countDown() }, out = out,
+            startImmediately = false, floatOutput = true,
+        )
+        try {
+            val format = AudioFormat(rate.toFloat(), 16, 1, true, false)
+            AudioInputStream(ByteArrayInputStream(samples), format, sourceFrames.toLong()).use {
+                AudioSystem.write(it, AudioFileFormat.Type.WAVE, file)
+            }
+            AppSettings.updatePlayback { it.copy(skipSilence = true) }
+            engine.begin()
+            assertTrue("it should reach the end", ended.await(20, TimeUnit.SECONDS))
+            assertEquals(null, problem)
+            assertEquals(AudioFormat.Encoding.PCM_FLOAT, out.format?.encoding)
+            assertEquals((rate * 3).toLong(), out.framePosition)
+            assertEquals(4_000L, engine.positionMs())
+        } finally {
+            engine.dispose()
+            AppSettings.updatePlayback { it.copy(skipSilence = skipSilence) }
+            file.delete()
+        }
+    }
+
     @Test fun graalJsRunsCurrentJavaScript() {
         // The shape of YouTube's throttling function: a named function over a string.
         assertEquals("cba", JavaScript.run("function f(a){return a.split('').reverse().join('')}", "f", "abc"))
@@ -144,7 +183,7 @@ class MediaTest {
         override fun open(format: AudioFormat): AudioFormat = format.also { this.format = it }
         override fun write(bytes: ByteArray, off: Int, len: Int): Int {
             this.bytes.write(bytes, off, len)
-            frames += len / 4
+            frames += len / requireNotNull(format).frameSize
             return len
         }
         override fun start() = Unit

@@ -22,9 +22,12 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Notifications
+import androidx.compose.material.icons.rounded.NotificationsNone
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Shuffle
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import com.opentune.ui.theme.Text
 import androidx.compose.runtime.Composable
@@ -86,6 +89,9 @@ internal fun ArtistView(item: ShelfItem, onOpen: (ShelfItem) -> Unit) {
     }
     val loaded = page
     val songs = loaded?.songs.orEmpty()
+    val releases by DesktopArtistReleases.state.collectAsState()
+    val following = releases.artists.any { it.browseId == id }
+    var followError by remember(id) { mutableStateOf(false) }
     val list = androidx.compose.foundation.lazy.rememberLazyListState()
     Box(Modifier.fillMaxSize()) {
     LazyColumn(state = list, contentPadding = PaddingValues(bottom = LocalPageBottom.current), verticalArrangement = Arrangement.spacedBy(28.dp)) {
@@ -111,7 +117,14 @@ internal fun ArtistView(item: ShelfItem, onOpen: (ShelfItem) -> Unit) {
                     Row(horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.CenterVertically) {
                         RoundButton(Icons.Rounded.Shuffle, "Shuffle", 46.dp, solid = false, enabled = songs.isNotEmpty()) { Player.playAll(songs.shuffled(), 0) }
                         RoundButton(Icons.Rounded.PlayArrow, "Play", 58.dp, solid = true, enabled = songs.isNotEmpty()) { Player.playAll(songs, 0) }
+                        IconButton(enabled = loaded != null, onClick = {
+                            loaded?.let { followError = !DesktopArtistReleases.toggle(id, name, it.thumbnailUrl ?: item.thumbnailUrl, it) }
+                        }) {
+                            Icon(if (following) Icons.Rounded.Notifications else Icons.Rounded.NotificationsNone,
+                                com.opentune.i18n.Tr.t(if (following) "Unfollow artist" else "Follow artist"))
+                        }
                     }
+                    if (followError) Text("Couldn't save followed artists", color = MaterialTheme.colorScheme.error)
                 }
             }
         }
