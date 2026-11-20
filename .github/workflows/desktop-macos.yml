@@ -213,7 +213,14 @@ jobs:
 
           mount="$(mktemp -d)"
           hdiutil attach "$dmg" -readonly -nobrowse -noautoopen -mountpoint "$mount"
-          trap 'hdiutil detach "$mount"' EXIT
+          detach_image() {
+            for delay in 1 2 4 8 16; do
+              if hdiutil detach "$mount"; then return; fi
+              sleep "$delay"
+            done
+            hdiutil detach "$mount"
+          }
+          trap detach_image EXIT
           test "$(readlink "$mount/Applications")" = /Applications
           app="$mount/OpenTune.app"
           executable="$app/Contents/MacOS/OpenTune"
@@ -248,8 +255,11 @@ jobs:
           PY
               finder_log="$RUNNER_TEMP/opentune-finder-check.log"
               finder_errors="$RUNNER_TEMP/opentune-finder-check.stderr"
+              installed="$RUNNER_TEMP/opentune-installed/OpenTune.app"
+              mkdir -p "$(dirname "$installed")"
+              ditto "$app" "$installed"
               touch "$finder_log" "$finder_errors"
-              open -W -n -a "$app" --stdout "$finder_log" --stderr "$finder_errors" \
+              open -W -n -a "$installed" --stdout "$finder_log" --stderr "$finder_errors" \
                 "$fixture" --args --ui-check "--ui-check-finder=$fixture"
               cat "$finder_log" "$finder_errors"
               grep -Fx 'OpenTune Finder audio: opened' "$finder_log"
